@@ -15,4 +15,8 @@ include_directories(include)
 
 add_executable(unit_tests test/unit_test.cpp)
 add_executable(server_test test/server_test.cpp)
-add_executable(example example/example.cpp)
+
+if(WIN32)
+  add_executable(example example/example.cpp)
+endif()
+add_executable(example_linux example/example_linux.cpp)
