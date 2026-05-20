@@ -31,7 +31,8 @@ int main() {
         }
     };
 
-    jsonrpc::Conn server(waker);
+    jsonrpc::Conn server(waker, std::cin, std::cout, std::cerr,
+                         jsonrpc::Conn::kDefaultMaxContentLength, STDIN_FILENO);
 
     server.register_method("add", [](const jsonrpc::json& params) {
         return params[0].get<double>() + params[1].get<double>();

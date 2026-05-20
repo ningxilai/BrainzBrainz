@@ -567,3 +567,27 @@ TEST_CASE("Conn: User Logic Exceptions") {
 
     conn.stop();
 }
+
+TEST_CASE("Conn: Bidirectional RPC - notify_emacs (non-blocking)") {
+    std::stringstream in, out, err;
+    Conn conn([]() {}, in, out, err);
+    conn.register_async_method("test_notify", [](Context ctx, const json& p) {
+        ctx.notify_emacs("logged", p);
+        ctx.reply("done");
+    });
+    conn.start();
+
+    write_rpc_packet(in, R"({"jsonrpc":"2.0","method":"test_notify","params":{"msg":"hi"},"id":5})");
+
+    std::this_thread::sleep_for(10ms);
+    conn.process_queue();
+    std::this_thread::sleep_for(10ms);
+    conn.process_queue();
+
+    std::string output = out.str();
+    CHECK(output.find(R"("method":"logged")") != std::string::npos);
+    CHECK(output.find(R"("msg":"hi")") != std::string::npos);
+    CHECK(out.str().find(R"("id":5)") != std::string::npos);
+    CHECK(out.str().find(R"("result":"done")") != std::string::npos);
+    conn.stop();
+}

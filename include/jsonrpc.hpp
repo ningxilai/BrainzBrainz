@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include <chrono>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -21,6 +23,11 @@
 #endif
 
 #include "json.hpp"
+
+#ifndef _WIN32
+#include <unistd.h>
+#include <poll.h>
+#endif
 
 namespace jsonrpc {
 
@@ -330,8 +337,12 @@ public:
     void reply(json result);
     void error(int code, std::string message, json data = nullptr);
 
+    json call_emacs(const std::string& method, const json& params = nullptr);
+    void notify_emacs(const std::string& method, const json& params = nullptr);
+
     std::optional<int> id() const { return id_; }
     bool is_notification() const { return !id_.has_value(); }
+    Conn& conn() const { return conn_; }
 
 private:
     Conn& conn_;
@@ -355,13 +366,17 @@ public:
 
     // Constructor: waker is called whenever a new message arrives in the queue.
     // Use it to wake up your main event loop.
+    // input_fd: if >= 0, the reader thread uses poll() with a timeout
+    // on this fd (allowing clean shutdown). If -1, blocking reads are used.
     Conn(Waker waker,
         std::istream& input = std::cin,
         std::ostream& output = std::cout,
         std::ostream& error = std::cerr,
-        size_t max_pkg_size = kDefaultMaxContentLength)
+        size_t max_pkg_size = kDefaultMaxContentLength,
+        int input_fd = -1)
         : running_(false), next_id_(1), waker_(waker),
-        in_(input), out_(output), err_(error), max_content_length_(max_pkg_size) {
+        in_(input), out_(output), err_(error), max_content_length_(max_pkg_size),
+        input_fd_(input_fd) {
         // Force Windows stdin/stdout into binary mode to prevent \r\n translation.
         // Critical for correct Content-Length calculation.
 #ifdef _WIN32
@@ -469,6 +484,45 @@ public:
         send_message(j.dump());
     }
 
+    // Send a request to Emacs and wait for response (synchronous bidirectional RPC).
+    // Calls process_queue() while waiting so other messages are still handled.
+    json call_emacs(const std::string& method, const json& params = nullptr) {
+        int id = next_id_++;
+        std::promise<json> promise;
+        auto future = promise.get_future();
+
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            pending_callbacks_[id] = [&promise](const Response& resp) {
+                if (resp.is_error()) {
+                    auto& e = std::get<Error>(resp.content);
+                    promise.set_exception(std::make_exception_ptr(
+                        JsonRpcException(e.code, e.message.c_str(), e.data)));
+                } else {
+                    promise.set_value(std::get<json>(resp.content));
+                }
+            };
+        }
+
+        Request req{ id, method, params };
+        json j;
+        to_json(j, req);
+        send_message(j.dump());
+
+        while (future.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+            process_queue();
+            if (!running_) {
+                throw std::runtime_error("Connection closed while waiting for Emacs response");
+            }
+        }
+        return future.get();
+    }
+
+    // Send a notification to Emacs (one-way).
+    void notify_emacs(const std::string& method, const json& params = nullptr) {
+        send_notification(method, params);
+    }
+
     // Public method to reply with success (used by Context).
     void send_response_success(int id, json result) {
         json j;
@@ -525,20 +579,17 @@ private:
     std::map<std::string, AsyncRequestHandler> method_handlers_;
     std::map<int, ResponseHandler> pending_callbacks_;
 
+    int input_fd_;
+
     std::istream& in_;
     std::ostream& out_;
     std::ostream& err_;
 
     // Thread-safe message sender.
     void send_message(const std::string& body) {
-        // std::osyncstream will atomically write the buffer to the stream
-        // when it is destructed, so we don't need to manually lock.
-
-        // Emacs's jsonrpc use a HTTP-like framing with Content-Length header,
-        // Content-Length: <length>\r\n\r\n<body>
-        std::osyncstream(out_)
-            << "Content-Length: " << body.length() << "\r\n"
-            << "\r\n" << body << std::flush;
+        std::string msg = "Content-Length: " + std::to_string(body.length())
+                          + "\r\n\r\n" + body;
+        std::osyncstream(out_) << msg << std::flush;
     }
 
     // Helper: Send a protocol-level error where id is null.
@@ -619,6 +670,18 @@ private:
             };
 
         while (running_) {
+            // If we have a real fd, use poll() with timeout before reading
+            // so the thread can be interrupted when running_ becomes false.
+            if (input_fd_ >= 0) {
+                struct pollfd pfd = {input_fd_, POLLIN, 0};
+                int pret;
+                do {
+                    pret = poll(&pfd, 1, 100);
+                } while (pret < 0 && errno == EINTR && running_);
+                if (pret < 0) return;
+                if (pret == 0) continue; // timeout, check running_ again
+            }
+
             size_t content_length = 0;
 
             // 1. Read header.
@@ -688,5 +751,11 @@ inline void Context::error(int code, std::string message, json data) {
     if (id_.has_value()) {
         conn_.send_response_error(id_.value(), code, std::move(message), std::move(data));
     }
+}
+inline json Context::call_emacs(const std::string& method, const json& params) {
+    return conn_.call_emacs(method, params);
+}
+inline void Context::notify_emacs(const std::string& method, const json& params) {
+    conn_.notify_emacs(method, params);
 }
 }  // namespace jsonrpc
