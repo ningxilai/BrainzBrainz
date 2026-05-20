@@ -86,6 +86,11 @@ Each method-hash-table maps method-name (symbol) to handler function.")
 
 ;; --- Legacy Global State ---
 
+(defvar emacs-stdio-jsonrpc--load-dir
+  (when load-file-name (file-name-directory load-file-name))
+  "Directory where this .el file was loaded from.
+Used by `emacs-stdio-jsonrpc--find-executable' to locate build/.")
+
 (defvar emacs-stdio-jsonrpc--connection nil
   "The jsonrpc-process-connection to the feed processor subprocess.")
 
@@ -99,11 +104,17 @@ Each method-hash-table maps method-name (symbol) to handler function.")
 If NAME is nil, use `emacs-stdio-jsonrpc-executable'."
   (let* ((base (or name emacs-stdio-jsonrpc-executable))
          (candidates (list base)))
-    (when load-file-name
-      (let* ((dir (file-name-directory load-file-name))
-             (build (expand-file-name "build" dir)))
-        (when (file-directory-p build)
-          (nconc candidates (list (expand-file-name base build))))))
+    (when emacs-stdio-jsonrpc--load-dir
+      (let ((dir emacs-stdio-jsonrpc--load-dir))
+        (while dir
+          (let ((build-dir (expand-file-name "build" dir)))
+            (when (file-directory-p build-dir)
+              (nconc candidates (list (expand-file-name base build-dir)))))
+          (let ((parent (file-name-directory
+                         (directory-file-name dir))))
+            (if (and parent (not (string= parent dir)))
+                (setq dir parent)
+              (setq dir nil))))))
     (let ((cwd-build (expand-file-name (concat "build/" base))))
       (nconc candidates (list cwd-build)))
     (catch 'found
@@ -163,9 +174,13 @@ If KILL is non-nil, kill the process immediately (SIGKILL)."
       (if kill
           (delete-process (jsonrpc--process conn))
         (jsonrpc-notify conn "exit" nil)
-        (let ((proc (jsonrpc--process conn)))
-          (while (process-live-p proc)
-            (sleep-for 0.1))))
+        (let ((proc (jsonrpc--process conn))
+              (waited 0))
+          (while (and (process-live-p proc) (< waited 30))
+            (accept-process-output proc 0.1)
+            (setq waited (1+ waited)))
+          (when (process-live-p proc)
+            (delete-process proc))))
       (remhash app-name emacs-stdio-jsonrpc--connections))))
 
 ;;;###autoload
@@ -273,9 +288,13 @@ If KILL is non-nil, kill the process immediately (SIGKILL)."
       (if kill
           (delete-process (jsonrpc--process conn))
         (jsonrpc-notify conn "exit" nil)
-        (let ((proc (jsonrpc--process conn)))
-          (while (process-live-p proc)
-            (sleep-for 0.1))))
+        (let ((proc (jsonrpc--process conn))
+              (waited 0))
+          (while (and (process-live-p proc) (< waited 30))
+            (accept-process-output proc 0.1)
+            (setq waited (1+ waited)))
+          (when (process-live-p proc)
+            (delete-process proc))))
       ;; Remove from both legacy and multi-instance state
       (remhash "feed-processor" emacs-stdio-jsonrpc--connections)
       (setq emacs-stdio-jsonrpc--connection nil))))
