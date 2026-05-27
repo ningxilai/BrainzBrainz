@@ -2,9 +2,9 @@
 
 ## 项目根因
 
-实现 LazyCat 设想的超大文件编辑方案：外部进程打开文件，根据窗口坐标截取显示内容实时交付 Emacs 渲染，编辑操作通过 text diff 序列同步回外部进程（参考 <https://emacs-china.org/t/topic/25811/1>）。C++ 端负责文件 IO、全局语法分析等重型工作，Emacs 端保持轻量渲染。
+本库是 C++ JSON-RPC 2.0 stdio 绑定库，为 Emacs `jsonrpc.el` 与 C++ 子进程之间提供标准、轻量的通信层。纯头文件（`include/jsonrpc.hpp`），C++20，零外部依赖（JSON 处理使用 bundled `nlohmann/json`）。
 
-本项目提供的 C++ JSON-RPC stdio 基础设施是此方案的核心通信层——它为 Emacs（jsonrpc.el）与 C++ 子进程之间提供标准、轻量的 JSON-RPC 2.0 通信。在此框架下，Newsticker 的超大 feed 处理自然不再卡顿：只需要将 feed 缓冲区视为一种"文件"，用同一套外部进程管线处理即可。
+核心能力：Emacs 通过 stdio 启动 C++ 子进程，以 Content-Length 帧格式交换 JSON-RPC 2.0 消息。库提供 Reader 线程、线程安全队列、同步/异步方法注册、双向 RPC、notification、以及 POSIX 可中断 shutdown。
 
 ---
 
@@ -299,30 +299,6 @@ taskNNN [ ] goal:<可观察结果> | scope:<文件或区域> | verify:<证明方
 - `:coding 'binary` 是必需的，否则 Emacs 的行结束转换会破坏 Content-Length 计算。
 - `jsonrpc-process-connection` 是 Emacs 内置 `jsonrpc.el` 提供的类，自动处理 Content-Length 帧解析。
 
-### 与 Newsticker 集成
-
-`emacs-stdio-jsonrpc-newsticker.el` 使用 `:around` advice 拦截
-`newsticker--sentinel-work`，将 feed 缓冲区内容转发到 C++
-`feed_processor` 解析，结果注入 `newsticker--cache`：
-
-```elisp
-(require 'emacs-stdio-jsonrpc-newsticker)
-(emacs-stdio-jsonrpc-newsticker-mode 1)  ;; 启用拦截
-M-x newsticker-plainview                 ;; 原汁原味的 Newsticker
-```
-
-在 Emacs 31.0.50 中，newsticker 已合并为单个 native-compiled
-`.eln` 文件，`newsticker--sentinel-work(event status-ok feed-name
-command buffer)` 处理所有 feed 格式（RSS 0.91/0.92/1.0/2.0、Atom
-0.3/1.0）的 XML 解析。拦截成功后，原函数不再执行。
-
-`emacs-stdio-jsonrpc-newsticker-mode` 负责：
-1. 自动启动 C++ 子进程
-2. 读取 feed 缓冲区内容
-3. 通过 `process-feed` 发送给 C++ 解析
-4. 将解析结果写入 `newsticker--cache`
-5. 执行缓存老化、过期清理、持久化等标准 Newsticker 维护
-
 ### C++ 端
 
 - **Reader 线程**：独立线程阻塞读取 stdin，读取完整帧后解析为 `Request` / `Response` / `Error`，投递到 `ThreadSafeQueue`。
@@ -347,21 +323,3 @@ command buffer)` 处理所有 feed 格式（RSS 0.91/0.92/1.0/2.0、Atom
   - Linux 上：Reader 线程在每次阻塞读前用 `poll()` 检测内部 shutdown pipe，`server.stop()` 向该 pipe 写入数据唤醒 reader，然后调用 `thread.join()` 回收资源。
   - 最后调用 `server.stop()` 回收资源。
 - **关键设计**：POSIX 上使用 `poll(stdin_fd, ..., 100ms)` 超时轮询实现可中断阻塞读。Linux 子进程创建 `Conn` 时必须传入 `STDIN_FILENO` 作为 `input_fd`，库内部创建 shutdown pipe。在 `stop()` 时写入 pipe 唤醒 reader 线程，最终 `join()` 安全回收，无需 `detach()`。
-
-### 性能基准（2026-05-19 实测）
-
-10k 项 RSS (3.6 MB) / 1k 项 RSS (251 KB) 的对比：
-
-| 方案 | 1k 项 | 10k 项 |
-|------|-------|--------|
-| Elisp `libxml-parse-xml-region` + `dom-by-tag` | 0.007s | 0.208s |
-| C++ `feed_parser::parse_feed()` 纯解析 | 0.006s | 0.045s |
-| C++ feed_processor 全管线（stdio + JSON-RPC） | 0.372s | 2.147s |
-
-**关键解读**：
-- C++ 纯解析比 Elisp+libxml2 快 4–5×（45ms vs 208ms for 10k items）
-- 但全管线因 JSON-RPC 通信开销慢 ~10×：3.6 MB XML 经 stdio 传输 + 10k item JSON 序列化 + 100–1000 个 chunk notification 往返
-- C++ offloading 的价值不在原始速度，在于**不阻塞 Emacs 主线程**和**内存隔离**
-- 对典型 Newsticker 场景（每 30 分钟轮询），~0.37s/feed 的管线开销可忽略
-- Chunk size 对总时间影响可忽略；瓶颈在最初的请求-响应阶段而非 chunk 分发
-- 如需优化管线：考虑减少 stdio 往返（合并通知）、增大初始 chunk_size、或跳过 `accept-process-output` 轮询

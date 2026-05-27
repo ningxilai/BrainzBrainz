@@ -1,11 +1,12 @@
 ;;; test-emacs-stdio-jsonrpc.el --- Test for emacs-stdio-jsonrpc.el  -*- lexical-binding: t; -*-
 
 (require 'jsonrpc)
+(require 'cl-lib)
 
 (let* ((script-dir (file-name-directory (or load-file-name default-directory)))
        (project-root (expand-file-name ".." script-dir))
        (el-path (expand-file-name "emacs-stdio-jsonrpc.el" project-root))
-       (bin-path (expand-file-name "build/feed_processor" project-root))
+       (bin-path (expand-file-name "build/bridge_test_server" project-root))
        (log '())
        (pass 0)
        (fail 0))
@@ -27,122 +28,98 @@
     (message "--- %d passed, %d failed ---" pass fail)
     (if (> fail 0) (kill-emacs 1) (kill-emacs 0)))
 
-  (defconst test-rss-xml
-    "<?xml version=\"1.0\"?>
-<rss version=\"2.0\">
-  <channel>
-    <title>Test Feed</title>
-    <link>https://example.com</link>
-    <description>Test</description>
-    <item>
-      <title>Item 1</title>
-      <link>https://example.com/1</link>
-      <description>First item</description>
-      <pubDate>Mon, 18 May 2026 12:00:00 +0000</pubDate>
-      <guid>guid-1</guid>
-    </item>
-    <item>
-      <title>Item 2</title>
-      <link>https://example.com/2</link>
-      <description>Second item</description>
-      <pubDate>Mon, 18 May 2026 13:00:00 +0000</pubDate>
-      <guid>guid-2</guid>
-    </item>
-    <item>
-      <title>Item 3</title>
-      <link>https://example.com/3</link>
-      <description>Third item</description>
-      <pubDate>Mon, 18 May 2026 14:00:00 +0000</pubDate>
-      <guid>guid-3</guid>
-    </item>
-  </channel>
-</rss>")
+  (unless (file-exists-p bin-path)
+    (error "bridge_test_server not found; please build first"))
 
   (condition-case err
       (progn
-        ;; Test 1: Start subprocess
+        ;; Test 1: Start app
         (condition-case e
-            (let ((rpc (emacs-stdio-jsonrpc-start bin-path)))
-              (if (and rpc (emacs-stdio-jsonrpc-running-p))
-                  (log-ok "start subprocess")
-                (log-fail "start returned %S" rpc)))
-          (error (log-fail (format "start threw: %S" e))))
+            (let ((rpc (emacs-stdio-jsonrpc-start-app "jsonrpc-test" bin-path)))
+              (if (and rpc (emacs-stdio-jsonrpc-app-running-p "jsonrpc-test"))
+                  (log-ok "start-app: subprocess running")
+                (log-fail "start-app: failed")))
+          (error (log-fail (format "start-app threw: %S" e))))
 
-        ;; Test 2: Process feed (chunk_size=10, all items in one chunk)
+        ;; Test 2: Call echo method
         (condition-case e
-            (let* ((result (emacs-stdio-jsonrpc-process-feed
-                            test-rss-xml :chunk-size 10))
-                   (title (plist-get result :feed-title))
-                   (items (plist-get result :total-items))
-                   (chunks (plist-get result :total-chunks))
-                   (chunk-list (plist-get result :chunks)))
-              (if (and (equal title "Test Feed")
-                       (= items 3)
-                       (= chunks 1)
-                       (= (length chunk-list) 1))
-                    (log-ok (format "process-feed: title/items/chunks correct (%d items)" items))
-                (log-fail (format "process-feed result: %S" result))))
-          (error (log-fail (format "process-feed threw: %S" e))))
+            (let ((result (emacs-stdio-jsonrpc-call "jsonrpc-test" "echo" ["hello"])))
+              (if (equal result ["hello"])
+                  (log-ok "call echo: returned [\"hello\"]")
+                (log-fail (format "call echo: got %S" result))))
+          (error (log-fail (format "call echo threw: %S" e))))
 
-        ;; Test 3: Process feed with chunk_size=2, verify 2 chunks
+        ;; Test 3: Call add method
         (condition-case e
-            (let* ((result (emacs-stdio-jsonrpc-process-feed
-                            test-rss-xml :chunk-size 2))
-                   (chunks (plist-get result :total-chunks))
-                   (chunk-list (plist-get result :chunks)))
-              (if (and (= chunks 2) (= (length chunk-list) 2))
-                  (log-ok "chunk_size=2 → 2 chunks")
-                (log-fail (format "chunk_size=2 result: %S" result))))
-          (error (log-fail (format "chunk_size=2 threw: %S" e))))
+            (let ((result (emacs-stdio-jsonrpc-call "jsonrpc-test" "add" [3 4])))
+              (if (= result 7)
+                  (log-ok "call add(3,4) = 7")
+                (log-fail (format "call add: got %S, expected 7" result))))
+          (error (log-fail (format "call add threw: %S" e))))
 
-        ;; Test 4: on-chunk callback
-        (condition-case e
-            (let ((chunks-received nil))
-              (emacs-stdio-jsonrpc-process-feed
-               test-rss-xml :chunk-size 2
-               :on-chunk (lambda (params)
-                           (push params chunks-received)))
-              (when (>= (length chunks-received) 2)
-                (log-ok (format "on-chunk callback received %d chunks" (length chunks-received))))
-              (unless (>= (length chunks-received) 2)
-                (log-fail (format "on-chunk got %d chunks, expected ≥2"
-                                  (length chunks-received)))))
-          (error (log-fail (format "on-chunk threw: %S" e))))
-
-        ;; Test 5: Batch process feeds
-        (condition-case e
-            (let* ((feeds `(("feed-a" . ,test-rss-xml)
-                            ("feed-b" . ,test-rss-xml)))
-                   (done-labels nil))
-              (emacs-stdio-jsonrpc-process-feeds
-               feeds :chunk-size 10
-               :on-feed-done (lambda (label result)
-                               (push label done-labels)
-                               (unless (equal (plist-get result :feed-title) "Test Feed")
-                                 (log-fail "batch: wrong title for %s" label))))
-              (if (= (length done-labels) 2)
-                  (log-ok (format "batch process 2 feeds: %S" done-labels))
-                (log-fail (format "batch: only processed %d feeds" (length done-labels)))))
-          (error (log-fail (format "batch threw: %S" e))))
-
-        ;; Test 6: Benchmark
-        (condition-case e
-            (let ((bench (emacs-stdio-jsonrpc-benchmark
-                          `(("test" . ,test-rss-xml)) :iterations 2)))
-              (if (and (= (length bench) 1) (numberp (cdar bench)))
-                  (log-ok (format "benchmark: %.4fs per iteration" (cdar bench)))
-                (log-fail (format "benchmark returned %S" bench))))
-          (error (log-fail (format "benchmark threw: %S" e))))
-
-        ;; Test 7: Stop subprocess
+        ;; Test 4: Unknown method signals error
         (condition-case e
             (progn
-              (emacs-stdio-jsonrpc-stop)
-              (unless (emacs-stdio-jsonrpc-running-p)
-                (log-ok "stop subprocess"))
-              (when (emacs-stdio-jsonrpc-running-p)
-                (log-fail "process still running after stop")))
-          (error (log-fail (format "stop threw: %S" e))))
+              (emacs-stdio-jsonrpc-call "jsonrpc-test" "nonexistent" nil)
+              (log-fail "nonexistent method should have signalled error"))
+          (jsonrpc-error
+           (log-ok "unknown method signals jsonrpc-error"))
+          (error
+           (log-fail (format "unknown method threw unexpected: %S" e))))
+
+        ;; Test 5: Send notification
+        (condition-case e
+            (let ((result (emacs-stdio-jsonrpc-notify "jsonrpc-test" "ping" nil)))
+              (if (null result)
+                  (log-ok "notify ping: returned nil")
+                (log-fail (format "notify ping: got %S" result))))
+          (error (log-fail (format "notify ping threw: %S" e))))
+
+        ;; Test 6: Register method (bidirectional RPC)
+        (condition-case e
+            (let ((emacs-result nil))
+              (emacs-stdio-jsonrpc-register-method
+               "jsonrpc-test" "multiply"
+               (lambda (params)
+                 (setq emacs-result (* (aref params 0) (aref params 1)))
+                 emacs-result))
+              (let ((result (emacs-stdio-jsonrpc-call "jsonrpc-test" "emacs_multiply" [7 6])))
+                (if (equal result 42)
+                    (log-ok "bidirectional RPC: emacs_multiply(7,6) = 42")
+                  (log-fail (format "bidirectional RPC: got %S" result)))))
+          (error (log-fail (format "bidirectional RPC threw: %S" e))))
+
+        ;; Test 7: Unregister method
+        (condition-case e
+            (progn
+              (emacs-stdio-jsonrpc-unregister-method "jsonrpc-test" "multiply")
+              (condition-case e2
+                  (progn
+                    (emacs-stdio-jsonrpc-call "jsonrpc-test" "emacs_multiply" [2 3])
+                    (log-fail "unregistered method should have failed"))
+                (jsonrpc-error
+                 (log-ok "unregister-method: emacs_multiply no longer callable"))
+                (error
+                 (log-fail (format "unregister-method: unexpected: %S" e2)))))
+          (error (log-fail (format "unregister-method setup threw: %S" e))))
+
+        ;; Test 8: List apps
+        (condition-case e
+            (let ((apps (emacs-stdio-jsonrpc-list-apps)))
+              (if (member "jsonrpc-test" apps)
+                  (log-ok (format "list-apps: %S" apps))
+                (log-fail (format "list-apps: %S (missing jsonrpc-test)" apps))))
+          (error (log-fail (format "list-apps threw: %S" e))))
+
+        ;; Test 9: Stop app
+        (condition-case e
+            (progn
+              (emacs-stdio-jsonrpc-stop-app "jsonrpc-test")
+              (unless (emacs-stdio-jsonrpc-app-running-p "jsonrpc-test")
+                (log-ok "stop-app: subprocess stopped"))
+              (when (emacs-stdio-jsonrpc-app-running-p "jsonrpc-test")
+                (log-fail "stop-app: process still running")))
+          (error (log-fail (format "stop-app threw: %S" e))))
 
         (conclude))
 

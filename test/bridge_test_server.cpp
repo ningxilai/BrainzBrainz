@@ -51,6 +51,26 @@ int main() {
         return params;
     });
 
+    // Standard add method
+    conn.register_method("add", [](const json& params) {
+        return params[0].get<int>() + params[1].get<int>();
+    });
+
+    // Method that calls back into Emacs for multiplication
+    conn.register_async_method("emacs_multiply", [](Context ctx, const json& params) {
+        try {
+            json result = ctx.call_emacs("multiply", params);
+            ctx.reply(result);
+        } catch (const std::exception& e) {
+            ctx.error(-1, e.what());
+        }
+    });
+
+    // Simple ping (no-op, returns "pong")
+    conn.register_method("ping", [](const json&) {
+        return "pong";
+    });
+
     // Standard exit notification
     conn.register_notification("exit", [](const json&) {
         g_quit = true;

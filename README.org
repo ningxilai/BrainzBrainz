@@ -1,27 +1,26 @@
-* A simple JSON-RPC implementation in C++ for Emacs
+* emacs-stdio-jsonrpc — C++ JSON-RPC 2.0 stdio bridge for Emacs
 
 #+HTML: <img src="icon.jpg" align="right" width="25%">
 
-A lightweight, header-only JSON-RPC 2.0 server implementation for Windows.
+A portable, header-only C++ JSON-RPC 2.0 library for communicating with
+Emacs subprocesses over stdio using LSP-style Content-Length framing.
 
-It serves as a bridge between Emacs and Windows-specific capabilities,
-such as hosting Microsoft Edge WebView2 content, by communicating over
-standard input/output (Stdio) using LSP-style framing.
+It is designed to work with Emacs' built-in =jsonrpc.el= library, and
+includes both the C++ server library (=jsonrpc.hpp=) and an Emacs Lisp
+client library (=emacs-stdio-jsonrpc.el=) for managing subprocess
+lifecycle, request/response, notifications, and bidirectional RPC
+(C++ calling Emacs functions).
 
-It uses [[https://github.com/nlohmann/json][nlohmann/json]]([[https://github.com/nlohmann/json/releases/tag/v3.12.0][version 3.12.0]]) to parse JSON string.
+It uses [[https://github.com/nlohmann/json][nlohmann/json]]([[https://github.com/nlohmann/json/releases/tag/v3.12.0][version 3.12.0]]) for JSON parsing.
 
 *Key Features*
 
-- *LSP-style framing*: Use =Content-Length: {LEN}\r\n\r\n{BODY}=.
-  - ensure compatibility with Emacs's =jsonrpc.el=.
-- =\r\n= Safety: Force stdio into =_O_BINARY= mode on Windows
-  - prevent =\r\n= translation from breaking byte counts.
-
-While primarily optimized to solve Windows-specific I/O quirks, the core
-JSON-RPC 2.0 logic — including parsing, state management, and message
-dispatching — is implemented in standard, platform-agnostic C++. It can
-be readily used on Linux or macOS (Not yet extensively tested on these
-platforms).
+- *Portable*: Linux, Windows, macOS (C++20, no external dependencies)
+- *LSP-style framing*: =Content-Length: {LEN}\r\n\r\n{BODY}=, compatible with Emacs =jsonrpc.el=
+- *Bi-directional RPC*: C++ can call Elisp functions; Emacs can call C++ methods
+- *Multi-instance*: Run multiple independent C++ subprocesses simultaneously
+- *Clean shutdown*: POSIX poll-based interruptible reader thread (no =detach()=)
+- *Binary-safe*: Handles =\r\n= correctly on all platforms (Windows =_O_BINARY=)
 
 ** Getting Started
 
