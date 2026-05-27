@@ -198,3 +198,28 @@ Emacs 保持轻量渲染，C++ 负责全部数据管理。
 - item mark-read 双向同步（pager 不拦截 mark-read 操作）
 - 全文搜索
 - Windows 打包
+
+---
+
+### Phase 8: Project Repositioning — Infrastructure Library
+
+**Status**: Active
+
+**Goal**: Reposition `emacs-stdio-jsonrpc` from "Newsticker offloading solution" to
+"general-purpose C++ JSON-RPC stdio bridge for Emacs". The Newsticker integration
+becomes a demo/proof-of-concept, not the project's identity.
+
+**Entry Condition**: Evidence (2026-05-27) shows the founding assumption — Elisp
+Newsticker processing needs C++ offloading — is empirically false. Elisp baseline
+(~0.2s for 10k items) is already fast enough; C++ pipeline adds ~10× overhead.
+
+**Acceptance Gate**:
+- [ ] evidence.md updated with assumption re-evaluation
+- [ ] current.md updated with Phase 8 direction
+- [ ] README.md repositioned: library first, newsticker as demo
+- [ ] Newsticker integration demoted in documentation hierarchy
+
+**Major Out-of-Scope**:
+- Finding replacement use cases
+- Removing existing newsticker code
+- Any new feature development

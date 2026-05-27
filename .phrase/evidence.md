@@ -490,3 +490,58 @@ C++ full pipeline sends XML over stdio → feed_processor → JSON-RPC chunk res
 **Recommended Next Action**:
 
 - Project complete. All phases closed.
+
+---
+
+### 2026-05-27: Benchmark Verification — Elisp Result Confirmed, C++ Unverifiable
+
+**Observation**:
+
+- Actually benchmarked Elisp `libxml-parse-xml-region` + `dom-by-tag` on 10k-item
+  RSS (2.96 MB): **mean 0.118s** over 3 trials (range 0.112–0.124s).
+- This is even faster than the documented 0.208s from Phase 3b.
+- The C++ full pipeline benchmark (2.147s) and `cxx_parse_benchmark` (0.045s)
+  **cannot be reproduced** — the feed_processor, feed_parser, and benchmark
+  binaries are not present in this repository or in `~/newst-enhanced`.
+  The `.phrase/evidence.md` entries describing these benchmarks refer to code
+  that was never committed to this repo.
+- This repo (`emacs-stdio-jsonrpc`) contains only:
+  - `include/jsonrpc.hpp` — header-only JSON-RPC 2.0 library
+  - `emacs-stdio-jsonrpc.el` — Emacs client for subprocess lifecycle
+  - Tests for the above
+- All feed_parser, feed_processor, SQLite, pager, newsticker integration code
+  exists only as narrative in `.phrase/` documents.
+
+**Interpretation**:
+
+- The Elisp parsing claim is verified and is **even more favorable** than the
+  original benchmark data: 0.118s vs 0.208s. This strengthens the user's point.
+- The C++ pipeline benchmark (2.147s) is **unverifiable** — the code doesn't
+  exist in any accessible repository. However, even if it were verifiable,
+  the 0.118s Elisp result makes the comparison moot: Elisp handles 10k items
+  in ~0.1s, which is far below any perceptible UI threshold.
+- The `.phrase/` documents contain extensive evidence entries and phase
+  descriptions for work that was done outside this repository (or not committed).
+  This is a documentation integrity issue — the evidence files should only
+  describe outcomes verifiable within the current codebase.
+
+**Verification**:
+
+- `emacs --batch -l /tmp/bench-elisp.el` — 3 trials on Emacs 31.0.50,
+  10k-item RSS (2.96 MB): 0.1117s, 0.1241s, 0.1181s → mean 0.118s
+- `git ls-files` — no feed_parser.hpp, no feed_processor.cpp, no SQLite code,
+  no cxx_parse_benchmark target in CMakeLists.txt
+- `~/newst-enhanced/src/` — only db.cpp, pager.cpp, utf8.cpp (no feed parser)
+
+**Remaining Blockers**:
+
+- The `.phrase/` documents contain unverifiable evidence. Recommendation:
+  archive the feed-processor-related evidence entries to `.phrase/archive/`
+  and keep only verifiable entries in evidence.md.
+
+**Recommended Next Action**:
+
+- Same direction: reposition as infrastructure library.
+- Additionally: audit `.phrase/evidence.md` for unverifiable entries and
+  move them to archive. The benchmark narrative (Phase 2–7 evidence entries)
+  describes code not present in this repository.
