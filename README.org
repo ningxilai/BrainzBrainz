@@ -24,3 +24,19 @@ Append =--json= to any of the above for machine-readable output.
 Run with no arguments (or =--help=) for the full synopsis.
 
 One request per second max, per MusicBrainz rate-limit policy.
+
+* bookbrainz — BookBrainz terminal client
+
+Same shape, against =api.bookbrainz.org= (entities: author edition
+edition-group publisher series work).
+
+#+begin_src sh
+  bookbrainz search author --query "Tolkien"
+  bookbrainz lookup edition 2c389e5c-cf78-449e-9f9e-a5f7840b085b
+  bookbrainz browse edition --author d0ac6e1f-617d-41a7-928a-26bb401f77ad
+  bookbrainz query search --param q=Dune --param type=edition
+#+end_src
+
+Search takes =--query= (+ =--limit= / =--offset=); lookup takes an MBID;
+browse takes exactly one =--<linked>= MBID. =--json= and the rate
+policy behave as above.
