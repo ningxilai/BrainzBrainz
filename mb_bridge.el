@@ -117,8 +117,68 @@
   (alist-get type '(("artist" . "Artist")
                     ("release" . "Release")
                     ("recording" . "Recording")
+                    ("label" . "Label")
+                    ("release-group" . "Release Group")
+                    ("work" . "Work")
+                    ("area" . "Area")
+                    ("place" . "Place")
+                    ("event" . "Event")
+                    ("series" . "Series")
+                    ("instrument" . "Instrument")
+                    ("collection" . "Collection")
+                    ("url" . "URL")
+                    ("annotation" . "Annotation")
+                    ("tag" . "Tag")
+                    ("cdstub" . "CD Stub")
                     ("discid" . "Disc ID"))
              type nil #'equal))
+
+;;; Entity registry: one entry per entity, mirroring the C++ AllEntities
+;;; tuple and musicbrainz-api's per-entity overloads. All dispatch
+;;; (search/lookup/browse/detail) goes through this table.
+
+(defvar mb--entities
+  ;; :links mirrors the C++ browse_links (BrowseXEntityParams in TS).
+  '(("artist"       :search t :lookup t :browse t :list artists
+      :links ("area" "collection" "recording" "release" "release-group" "work"))
+    ("release"      :search t :lookup t :browse t :list releases
+      :links ("area" "artist" "editor" "event" "label" "place" "recording" "release" "release-group" "track_artist" "work"))
+    ("recording"    :search t :lookup t :browse t :list recordings
+      :links ("artist" "collection" "release" "work"))
+    ("label"        :search t :lookup t :browse t :list labels
+      :links ("area" "collection" "release"))
+    ("release-group" :search t :lookup t :browse t :list release-groups
+      :links ("artist" "collection" "release"))
+    ("work"         :search t :lookup t :browse t :list works
+      :links ("artist" "collection"))
+    ("area"         :search t :lookup t :browse t :list areas
+      :links ("collection"))
+    ("place"        :search t :lookup t :browse t :list places
+      :links ("area" "collection"))
+    ("event"        :search t :lookup t :browse t :list events
+      :links ("area" "artist" "collection" "place"))
+    ("series"       :search t :lookup t :browse t :list series
+      :links ("collection"))
+    ("instrument"  :search t :lookup t :browse t :list instruments
+      :links ("collection"))
+    ("collection"   :search nil :lookup t :browse t :list collections
+      :links ("area" "artist" "editor" "event" "label" "place" "recording" "release" "release-group" "work"))
+    ("url"          :search t :lookup t :browse t :list urls
+      :links ("resource"))
+    ("annotation"   :search t :lookup nil :browse nil :list annotations)
+    ("tag"          :search t :lookup nil :browse nil :list tags)
+    ("cdstub"       :search t :lookup nil :browse nil :list cdstubs)
+    ("discid"       :search nil :lookup t :browse nil :list releases))
+  "Entity capability table. Keys mirror musicbrainz-api's method set:
+searchable/lookable/browsable per entity; :list is the search key;
+:links mirrors the C++ browse_links (TS BrowseXEntityParams).")
+
+(defun mb--entities-where (prop)
+  (mapcar #'car (seq-filter (lambda (e) (plist-get (cdr e) prop))
+                            mb--entities)))
+
+(defun mb--entity-prop (entity prop)
+  (plist-get (cdr (assoc entity mb--entities)) prop))
 
 ;;; Per-entity summary lines (mirrors BrainzWrap format-*)
 
@@ -145,11 +205,90 @@
           (let ((ac (mb--credit-string r)))
             (if (string-empty-p ac) "" (format " — %s" ac)))))
 
+(defun mb--format-label (l)
+  (string-join
+   (delq nil
+         (list (plist-get l :name)
+               (when-let* ((ty (plist-get l :type))) (format "[%s]" ty))
+               (when-let* ((code (plist-get l :label-code))) (format "(LC %s)" code))))
+   " "))
+
+(defun mb--format-release-group (g)
+  (format "%s%s%s"
+          (or (plist-get g :title) "")
+          (if-let* ((d (plist-get g :first-release-date))) (format " (%s)" d) "")
+          (if-let* ((p (plist-get g :primary-type))) (format " [%s]" p) "")))
+
+(defun mb--format-work (w)
+  (string-join
+   (delq nil
+         (list (plist-get w :title)
+               (when-let* ((ty (plist-get w :type))) (format "[%s]" ty))
+               (when-let* ((lang (plist-get w :language))) (format "(%s)" lang))))
+   " "))
+
+(defun mb--format-area (a)
+  (string-join
+   (delq nil
+         (list (plist-get a :name)
+               (when-let* ((ty (plist-get a :type))) (format "[%s]" ty))))
+   " "))
+
+(defun mb--format-place (p)
+  (string-join
+   (delq nil
+         (list (plist-get p :name)
+               (when-let* ((ty (plist-get p :type))) (format "[%s]" ty))
+               (when-let* ((ad (plist-get p :address))) (format "(%s)" ad))))
+   " "))
+
+(defun mb--format-event (e)
+  (string-join
+   (delq nil
+         (list (plist-get e :name)
+               (when-let* ((ty (plist-get e :type))) (format "[%s]" ty))
+               (when-let* ((tm (plist-get e :time))) (format "(%s)" tm))))
+   " "))
+
+(defun mb--format-series (s)
+  (string-join
+   (delq nil
+         (list (plist-get s :name)
+               (when-let* ((ty (plist-get s :type))) (format "[%s]" ty))))
+   " "))
+
+(defun mb--format-instrument (i)
+  (string-join
+   (delq nil
+         (list (plist-get i :name)
+               (when-let* ((ty (plist-get i :type))) (format "[%s]" ty))))
+   " "))
+
+(defun mb--format-collection (c)
+  (or (plist-get c :name) ""))
+
+(defun mb--format-url (u)
+  (or (plist-get u :resource) (plist-get u :id) ""))
+
+(defun mb--format-annotation (a)
+  (or (plist-get a :name) ""))
+
+(defun mb--format-tag (tag)
+  (or (plist-get tag :name) ""))
+
+(defun mb--format-cdstub (c)
+  (format "%s%s"
+          (or (plist-get c :title) "")
+          (if-let* ((ar (plist-get c :artist))) (format " — %s" ar) "")))
+
 
 ;;; Search results buffer (tabulated-list-mode, elpaca-manager style)
 
 (defvar-local mb--entity nil "Entity type string for this results buffer.")
-(defvar-local mb--query nil "Query string for this results buffer.")
+(defvar-local mb--query nil "Query string (search mode) for this buffer.")
+(defvar-local mb--linked nil "Linked entity type (browse mode).")
+(defvar-local mb--linked-id nil "Linked entity MBID (browse mode).")
+(defvar-local mb--mode nil "Either `search' or `browse'.")
 (defvar-local mb--limit nil)
 (defvar-local mb--offset nil)
 (defvar-local mb--count nil)
@@ -179,6 +318,8 @@
                                             (plist-get item :status)))
                             " "))
     ("recording" (mb--ms (plist-get item :length)))
+    ("label" (or (plist-get item :label-code) ""))
+    ("release-group" (or (plist-get item :first-release-date) ""))
     (_ "")))
 
 (defun mb--entry-summary (entity item)
@@ -186,10 +327,24 @@
     ("artist" (mb--format-artist item))
     ("release" (mb--format-release item))
     ("recording" (mb--format-recording item))
+    ("label" (mb--format-label item))
+    ("release-group" (mb--format-release-group item))
+    ("work" (mb--format-work item))
+    ("area" (mb--format-area item))
+    ("place" (mb--format-place item))
+    ("event" (mb--format-event item))
+    ("series" (mb--format-series item))
+    ("instrument" (mb--format-instrument item))
+    ("collection" (mb--format-collection item))
+    ("url" (mb--format-url item))
+    ("annotation" (mb--format-annotation item))
+    ("tag" (mb--format-tag item))
+    ("cdstub" (mb--format-cdstub item))
     (_ (or (plist-get item :title) (plist-get item :name) ""))))
 
 (defun mb--list-key (entity)
-  (intern (concat entity "s")))
+  "Search-result list key for ENTITY (mirrors TS I*List shapes)."
+  (plist-get (cdr (assoc entity mb--entities)) :list))
 
 (defun mb--make-entries (entity items)
   (mapcar (lambda (it)
@@ -201,8 +356,11 @@
 
 (defun mb--refresh-header ()
   (setq header-line-format
-        (format " %s \"%s\" — %d of %s (RET detail, + more, g refresh, q quit)"
-                (mb--entity-label mb--entity) mb--query
+        (format " %s %s — %d of %s (RET detail, + more, g refresh, q quit)"
+                (mb--entity-label mb--entity)
+                (if (eq mb--mode 'browse)
+                    (format "by %s %s" mb--linked mb--linked-id)
+                  (format "\"%s\"" mb--query))
                 (length mb--entries)
                 (or mb--count "?"))))
 
@@ -210,38 +368,75 @@
   (mb-bridge--call (concat "search-" entity)
                    (list :query query :limit limit :offset offset)))
 
+(defun mb--run-browse (entity linked linked-id limit offset)
+  (mb-bridge--call (concat "browse-" entity)
+                   (list (intern (concat ":" linked)) linked-id
+                         :limit limit :offset offset)))
+
+(defun mb--run-page (limit offset)
+  "Fetch one page for the current buffer (search or browse mode)."
+  (if (eq mb--mode 'browse)
+      (mb--run-browse mb--entity mb--linked mb--linked-id limit offset)
+    (mb--run-search mb--entity mb--query limit offset)))
+
+(defun mb--show-results-buffer (buf)
+  (with-current-buffer buf
+    (mb-search-mode)
+    (let* ((res (mb--run-page mb--limit mb--offset))
+           (items (seq-into (plist-get res (mb--list-key mb--entity)) 'list)))
+      (setq mb--count (plist-get res :count)
+            mb--entries (mb--make-entries mb--entity items)
+            tabulated-list-entries mb--entries)
+      (tabulated-list-print t)
+      (mb--refresh-header)))
+  (pop-to-buffer buf))
+
 (defun mb-search (entity query)
   "Search MusicBrainz ENTITY for QUERY, showing a results buffer."
   (interactive
-   (list (completing-read "Entity: " '("artist" "release" "recording")
+   (list (completing-read "Entity: " (mb--entities-where :search)
                            nil t nil nil "artist")
          (read-string "Query (e.g. artist:radiohead): ")))
   (let ((buf (get-buffer-create (format "*mb:%s:%s*" entity query))))
     (with-current-buffer buf
-      (mb-search-mode)
       (setq mb--entity entity
             mb--query query
+            mb--mode 'search
             mb--limit mb-bridge-limit
             mb--offset 0
             mb--entries nil)
-      (message "Searching %s for %S..." entity query)
-      (let* ((res (mb--run-search entity query mb-bridge-limit 0))
-             (items (seq-into (plist-get res (mb--list-key entity)) 'list)))
-        (setq mb--count (plist-get res :count)
-              mb--entries (mb--make-entries entity items)
-              tabulated-list-entries mb--entries)
-        (tabulated-list-print t)
-        (mb--refresh-header)))
-    (pop-to-buffer buf)))
+      (message "Searching %s for %S..." entity query))
+    (mb--show-results-buffer buf)))
+
+(defun mb-browse (entity linked linked-id)
+  "Browse ENTITY linked to LINKED entity MBID LINKED-ID."
+  (interactive
+   (let* ((en (completing-read "Browse entity: " (mb--entities-where :browse)
+                               nil t nil nil "release"))
+          (lk (completing-read "Linked by: "
+                               (mb--entity-prop en :links) nil t))
+          (id (read-string (format "%s MBID%s: " lk (if (equal lk "resource") " or URI" "")))))
+     (list en lk id)))
+  (let ((buf (get-buffer-create (format "*mb:browse-%s:%s*" entity linked-id))))
+    (with-current-buffer buf
+      (setq mb--entity entity
+            mb--linked linked
+            mb--linked-id linked-id
+            mb--mode 'browse
+            mb--limit mb-bridge-limit
+            mb--offset 0
+            mb--entries nil)
+      (message "Browsing %s by %s %s..." entity linked linked-id))
+    (mb--show-results-buffer buf)))
 
 (defun mb-search-more ()
-  "Load the next page of results into the current search buffer."
+  "Load the next page of results into the current results buffer."
   (interactive nil mb-search-mode)
   (let ((next (+ mb--offset mb--limit)))
     (when (and mb--count (>= next mb--count))
       (user-error "No more results"))
     (message "Loading more...")
-    (let* ((res (mb--run-search mb--entity mb--query mb--limit next))
+    (let* ((res (mb--run-page mb--limit next))
            (items (seq-into (plist-get res (mb--list-key mb--entity)) 'list)))
       (setq mb--offset next
             mb--entries (append mb--entries
@@ -396,10 +591,77 @@
       (mb--mbid-button (plist-get rel :title) "release"
                        (plist-get rel :id)))))
 
+(defun mb--detail-label (l)
+  (mb--meta "Type" (plist-get l :type))
+  (mb--meta "Country" (plist-get l :country))
+  (mb--meta "Sort Name" (plist-get l :sort-name))
+  (mb--meta "Label Code" (plist-get l :label-code))
+  (mb--meta "Disambiguation" (plist-get l :disambiguation))
+  (when-let* ((ls (plist-get l :life-span)))
+    (insert "\nLife Span\n")
+    (mb--meta "Begin" (plist-get ls :begin))
+    (mb--meta "End" (plist-get ls :end)))
+  (mb--tags-section l)
+  (mb--genres-section l)
+  (mb--sameas-section l))
+
+(defun mb--detail-release-group (g)
+  (mb--meta "Type" (plist-get g :type))
+  (mb--meta "Disambiguation" (plist-get g :disambiguation))
+  (mb--meta "First Date" (plist-get g :first-release-date))
+  (mb--meta "Primary" (plist-get g :primary-type))
+  (when-let* ((st (plist-get g :secondary-types)))
+    (mb--meta "Secondary" (string-join (seq-into st 'list) ", ")))
+  (mb--meta "Artists" (mb--credit-string g))
+  (mb--tags-section g)
+  (mb--genres-section g)
+  (mb--sameas-section g))
+
+(defun mb--detail-work (w)
+  (mb--meta "Type" (plist-get w :type))
+  (mb--meta "Disambiguation" (plist-get w :disambiguation))
+  (mb--meta "Language" (plist-get w :language))
+  (when-let* ((langs (plist-get w :languages)))
+    (mb--meta "Languages" (string-join (seq-into langs 'list) ", ")))
+  (when-let* ((iswcs (plist-get w :iswcs)))
+    (mb--meta "ISWCs" (string-join (seq-into iswcs 'list) ", ")))
+  (mb--tags-section w)
+  (mb--genres-section w)
+  (mb--sameas-section w))
+
+(defun mb--detail-generic (e)
+  "Fallback renderer: print scalar fields, then shared sections.
+Covers area/place/event/series/instrument/collection/url and any
+future entity without a dedicated renderer."
+  (dolist (kv '((:name . "Name") (:title . "Title") (:type . "Type")
+                (:disambiguation . "Disambiguation")
+                (:sort-name . "Sort Name") (:country . "Country")
+                (:address . "Address") (:description . "Description")
+                (:language . "Language") (:editor . "Editor")
+                (:entity-type . "Entity Type") (:time . "Time")
+                (:cancelled . "Cancelled") (:resource . "Resource")
+                (:barcode . "Barcode") (:comment . "Comment")
+                (:artist . "Artist") (:label-code . "Label Code")))
+    (let ((v (plist-get e (car kv))))
+      (when (and v (not (equal v "")) (atom v))
+        (mb--meta (cdr kv) (format "%s" v)))))
+  (when-let* ((ls (plist-get e :life-span)))
+    (insert "\nLife Span\n")
+    (mb--meta "Begin" (plist-get ls :begin))
+    (mb--meta "End" (plist-get ls :end)))
+  (when-let* ((iso (plist-get e :iso-3166-1-codes)))
+    (mb--meta "ISO" (string-join (seq-into iso 'list) ", ")))
+  (when-let* ((co (plist-get e :coordinates)))
+    (mb--meta "Coords" (format "%s, %s" (plist-get co :latitude)
+                               (plist-get co :longitude))))
+  (mb--tags-section e)
+  (mb--genres-section e)
+  (mb--sameas-section e))
+
 (defun mb-lookup (entity mbid)
-  "Show a detail buffer for ENTITY (artist/release/recording/discid) MBID."
+  "Show a detail buffer for ENTITY MBID."
   (interactive
-   (list (completing-read "Entity: " '("artist" "release" "recording" "discid")
+   (list (completing-read "Entity: " (mb--entities-where :lookup)
                            nil t nil nil "artist")
          (read-string "MBID: ")))
   (message "Looking up %s %s..." entity mbid)
@@ -415,7 +677,11 @@
           ("artist" (mb--detail-artist res))
           ("release" (mb--detail-release res))
           ("recording" (mb--detail-recording res))
-          ("discid" (mb--detail-disc res)))
+          ("discid" (mb--detail-disc res))
+          ("label" (mb--detail-label res))
+          ("release-group" (mb--detail-release-group res))
+          ("work" (mb--detail-work res))
+          (_ (mb--detail-generic res)))
         (mb-detail-mode)
         (goto-char (point-min))))
     (pop-to-buffer buf)))

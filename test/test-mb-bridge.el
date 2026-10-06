@@ -108,7 +108,53 @@
                 (log-ok "tags/genres/sameAs sections render")
               (log-fail (format "sections missing: %S" (buffer-string))))))
 
-        ;; Test 7: detail renderer runs headless
+        ;; Test 7: search-label carries score (IMatch)
+        (let* ((res (mb-bridge--call "search-label"
+                                     '(:query "label:Warp" :limit 1 :offset 0)))
+               (labels (plist-get res :labels))
+               (l (aref labels 0)))
+          (if (and (plist-get l :name)
+                   (numberp (plist-get l :score)))
+              (log-ok "search-label with score")
+            (log-fail (format "search-label unexpected: %S" l))))
+
+        ;; Test 8: lookup release-group
+        (let ((res (mb-bridge--call "lookup-release-group"
+                                    '(:id "b1392450-e666-3926-a536-22c65f834433"))))
+          (if (and (equal (plist-get res :title) "OK Computer")
+                   (equal (plist-get res :primary-type) "Album"))
+              (log-ok "lookup release-group")
+            (log-fail (format "release-group unexpected: %S" res))))
+
+        ;; Test 9: browse releases by artist
+        (let* ((res (mb-bridge--call "browse-release"
+                                     '(:artist "a74b1b7f-71a5-4011-9441-d0b5e4122711"
+                                       :limit 2 :offset 0)))
+               (rels (plist-get res :releases)))
+          (if (and (> (plist-get res :release-count) 100)
+                   (> (seq-length rels) 0)
+                   (plist-get (aref rels 0) :title))
+              (log-ok "browse releases by artist")
+            (log-fail (format "browse unexpected: %S" res))))
+
+        ;; Test 10: browse rejects zero/two linked keys
+        (condition-case e10
+            (progn
+              (mb-bridge--call "browse-release" '(:limit 1 :offset 0))
+              (log-fail "browse without link did not error"))
+          (error (log-ok "browse without link rejected")))
+
+        ;; Test 11: generic detail fallback renders headless
+        (with-temp-buffer
+          (mb--detail-generic '(:name "Berlin" :type "City" :country "DE"
+                                :iso-3166-1-codes ["DE"]
+                                :life-span (:begin "1237" :end "")))
+          (if (and (string-match-p "Berlin" (buffer-string))
+                   (string-match-p "1237" (buffer-string)))
+              (log-ok "generic detail fallback")
+            (log-fail (format "generic detail unexpected: %S" (buffer-string)))))
+
+        ;; Test 12: detail renderer runs headless
         (with-temp-buffer
           (mb--detail-artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
                                :disambiguation "" :life-span (:begin "1926" :end "1991")))

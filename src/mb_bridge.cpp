@@ -298,6 +298,12 @@ struct Artist {
     static constexpr std::string_view list_key = "artists";
     static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
     static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "artists";
+    // Mirrors BrowseArtistsEntityParams.
+    static constexpr std::array<std::string_view, 6> browse_links = {
+        "area", "collection", "recording", "release", "release-group", "work"};
     // Mirrors ArtistIncludes = MiscIncludes | RelationsIncludes
     //   | recordings | releases | release-groups | works.
     static constexpr std::array<std::string_view, 23> allowed_inc = {
@@ -434,6 +440,13 @@ struct Release {
     static constexpr std::string_view default_inc =
         "artists+labels+recordings+release-groups+artist-credits+discids+tags+genres+url-rels";
     static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "releases";
+    // Mirrors BrowseReleasesEntityParams.
+    static constexpr std::array<std::string_view, 11> browse_links = {
+        "area", "artist", "editor", "event", "label", "place",
+        "recording", "release", "release-group", "track_artist", "work"};
     // Mirrors ReleaseIncludes = MiscIncludes | SubQueryIncludes
     //   | RelationsIncludes | artists | collections | labels | recordings
     //   | release-groups | recording-level-rels.
@@ -519,6 +532,12 @@ struct Recording {
     static constexpr std::string_view list_key = "recordings";
     static constexpr std::string_view default_inc = "artists+releases+isrcs+artist-credits+tags+genres+url-rels";
     static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "recording";
+    // Mirrors BrowseRecordingsEntityParams.
+    static constexpr std::array<std::string_view, 4> browse_links = {
+        "artist", "collection", "release", "work"};
     // Mirrors RecordingIncludes = MiscIncludes | RelationsIncludes
     //   | SubQueryIncludes | artists | releases | isrcs.
     static constexpr std::array<std::string_view, 25> allowed_inc = {
@@ -593,6 +612,8 @@ struct Disc {
     static constexpr std::string_view list_key = "releases"; // unused
     static constexpr std::string_view default_inc = "";
     static constexpr bool searchable = false; // lookup-only
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = false;
     // discid takes no inc parameter.
     static constexpr std::array<std::string_view, 0> allowed_inc = {};
 
@@ -628,9 +649,640 @@ struct Disc {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Remaining read-side entities, mirroring musicbrainz.types.ts shapes.
+// Each carries endpoint / list_key / browse_key / inc sets, following
+// the same tag-type pattern as Artist/Release/Recording.
+// ---------------------------------------------------------------------------
+struct Label {
+    static constexpr std::string_view endpoint = "label";
+    static constexpr std::string_view list_key = "labels";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels+releases";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "label";
+    // Mirrors BrowseLabelsEntityParams.
+    static constexpr std::array<std::string_view, 3> browse_links = {
+        "area", "collection", "release"};
+    // Mirrors LabelIncludes = MiscIncludes | RelationsIncludes | releases.
+    static constexpr std::array<std::string_view, 20> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels", "releases"};
+
+    std::string id, type, name, sort_name, label_code, country, disambiguation;
+    std::string begin, end;
+    bool ended = false;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Label from(const json& j) {
+        Label l;
+        l.id = sstr(j, "id");
+        l.type = sstr(j, "type");
+        l.name = sstr(j, "name");
+        l.sort_name = sstr(j, "sort-name");
+        l.label_code = sstr(j, "label-code");
+        l.country = sstr(j, "country");
+        l.disambiguation = sstr(j, "disambiguation");
+        if (j.contains("life-span") && j["life-span"].is_object()) {
+            l.begin = sstr(j["life-span"], "begin");
+            l.end = sstr(j["life-span"], "end");
+            l.ended = sbool(j["life-span"], "ended");
+        }
+        l.tags = parse_tags(j);
+        l.genres = parse_genres(j);
+        l.same_as = parse_sameas(j);
+        return l;
+    }
+    // Keys mirror ILabel.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"name", name},
+                  {"sort-name", sort_name},
+                  {"type", type},
+                  {"label-code", label_code},
+                  {"country", country},
+                  {"disambiguation", disambiguation}};
+        if (!begin.empty() || !end.empty())
+            o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct ReleaseGroup {
+    static constexpr std::string_view endpoint = "release-group";
+    static constexpr std::string_view list_key = "release-groups";
+    static constexpr std::string_view default_inc = "artists+releases";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "release-groups";
+    // Mirrors BrowseReleaseGroupsEntityParams.
+    static constexpr std::array<std::string_view, 3> browse_links = {
+        "artist", "collection", "release"};
+    // Mirrors ReleaseGroupIncludes (25).
+    static constexpr std::array<std::string_view, 25> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "discids", "isrcs", "artist-credits", "various-artists",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels", "artists", "releases"};
+
+    std::string id, type, title, disambiguation, first_release_date, primary_type;
+    std::vector<std::string> secondary_types;
+    std::vector<NameCredit> credit;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static ReleaseGroup from(const json& j) {
+        ReleaseGroup g;
+        g.id = sstr(j, "id");
+        g.type = sstr(j, "type");
+        g.title = sstr(j, "title");
+        g.disambiguation = sstr(j, "disambiguation");
+        g.first_release_date = sstr(j, "first-release-date");
+        g.primary_type = sstr(j, "primary-type");
+        if (j.contains("secondary-types") && j["secondary-types"].is_array())
+            for (const auto& s : j["secondary-types"])
+                if (s.is_string()) g.secondary_types.push_back(s.get<std::string>());
+        if (j.contains("artist-credit") && j["artist-credit"].is_array())
+            for (const auto& n : j["artist-credit"])
+                g.credit.push_back(NameCredit::from(n));
+        g.tags = parse_tags(j);
+        g.genres = parse_genres(j);
+        g.same_as = parse_sameas(j);
+        return g;
+    }
+    // Keys mirror IReleaseGroup.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"type", type},
+                  {"title", title},
+                  {"disambiguation", disambiguation},
+                  {"first-release-date", first_release_date},
+                  {"primary-type", primary_type},
+                  {"secondary-types", secondary_types}};
+        json ca = json::array();
+        for (const auto& n : credit) ca.push_back(n.to_json());
+        o["artist-credit"] = std::move(ca);
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Work {
+    static constexpr std::string_view endpoint = "work";
+    static constexpr std::string_view list_key = "works";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "works";
+    // Mirrors BrowseWorksEntityParams.
+    static constexpr std::array<std::string_view, 2> browse_links = {
+        "artist", "collection"};
+    // Mirrors WorkIncludes = MiscIncludes | RelationsIncludes (19).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
+
+    std::string id, type, title, disambiguation, language;
+    std::vector<std::string> languages, iswcs;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Work from(const json& j) {
+        Work w;
+        w.id = sstr(j, "id");
+        w.type = sstr(j, "type");
+        w.title = sstr(j, "title");
+        w.disambiguation = sstr(j, "disambiguation");
+        w.language = sstr(j, "language");
+        if (j.contains("languages") && j["languages"].is_array())
+            for (const auto& l : j["languages"])
+                if (l.is_string()) w.languages.push_back(l.get<std::string>());
+        if (j.contains("iswcs") && j["iswcs"].is_array())
+            for (const auto& s : j["iswcs"])
+                if (s.is_string()) w.iswcs.push_back(s.get<std::string>());
+        w.tags = parse_tags(j);
+        w.genres = parse_genres(j);
+        w.same_as = parse_sameas(j);
+        return w;
+    }
+    // Keys mirror IWork.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"type", type},
+                  {"title", title},
+                  {"disambiguation", disambiguation},
+                  {"language", language},
+                  {"languages", languages},
+                  {"iswcs", iswcs}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Area {
+    static constexpr std::string_view endpoint = "area";
+    static constexpr std::string_view list_key = "areas";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    // IBrowseAreasResult uses singular "area" key.
+    static constexpr std::string_view browse_key = "area";
+    static constexpr std::array<std::string_view, 1> browse_links = {"collection"};
+    // Mirrors AreaIncludes = MiscIncludes | RelationsIncludes (19).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
+
+    std::string id, type, name, sort_name, disambiguation, begin, end;
+    bool ended = false;
+    std::vector<std::string> iso_codes;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Area from(const json& j) {
+        Area a;
+        a.id = sstr(j, "id");
+        a.type = sstr(j, "type");
+        a.name = sstr(j, "name");
+        a.sort_name = sstr(j, "sort-name");
+        a.disambiguation = sstr(j, "disambiguation");
+        if (j.contains("iso-3166-1-codes") && j["iso-3166-1-codes"].is_array())
+            for (const auto& c : j["iso-3166-1-codes"])
+                if (c.is_string()) a.iso_codes.push_back(c.get<std::string>());
+        if (j.contains("life-span") && j["life-span"].is_object()) {
+            a.begin = sstr(j["life-span"], "begin");
+            a.end = sstr(j["life-span"], "end");
+            a.ended = sbool(j["life-span"], "ended");
+        }
+        a.tags = parse_tags(j);
+        a.genres = parse_genres(j);
+        a.same_as = parse_sameas(j);
+        return a;
+    }
+    // Keys mirror IArea.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"name", name},
+                  {"sort-name", sort_name},
+                  {"type", type},
+                  {"disambiguation", disambiguation},
+                  {"iso-3166-1-codes", iso_codes}};
+        if (!begin.empty() || !end.empty())
+            o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Place {
+    static constexpr std::string_view endpoint = "place";
+    static constexpr std::string_view list_key = "places";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    // IBrowsePlacesResult uses singular "place" key.
+    static constexpr std::string_view browse_key = "place";
+    // Mirrors BrowsePlacesEntityParams.
+    static constexpr std::array<std::string_view, 2> browse_links = {"area", "collection"};
+    // Mirrors PlaceIncludes (19).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
+
+    std::string id, type, name, disambiguation, address, begin, end;
+    bool ended = false;
+    double latitude = 0, longitude = 0;
+    bool has_coords = false;
+    std::string area_id, area_name;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Place from(const json& j) {
+        Place p;
+        p.id = sstr(j, "id");
+        p.type = sstr(j, "type");
+        p.name = sstr(j, "name");
+        p.disambiguation = sstr(j, "disambiguation");
+        p.address = sstr(j, "address");
+        if (j.contains("coordinates") && j["coordinates"].is_object()) {
+            auto it1 = j["coordinates"].find("latitude");
+            auto it2 = j["coordinates"].find("longitude");
+            if (it1 != j["coordinates"].end() && it1->is_number() &&
+                it2 != j["coordinates"].end() && it2->is_number()) {
+                p.latitude = it1->get<double>();
+                p.longitude = it2->get<double>();
+                p.has_coords = true;
+            }
+        }
+        if (j.contains("life-span") && j["life-span"].is_object()) {
+            p.begin = sstr(j["life-span"], "begin");
+            p.end = sstr(j["life-span"], "end");
+            p.ended = sbool(j["life-span"], "ended");
+        }
+        if (j.contains("area") && j["area"].is_object()) {
+            p.area_id = sstr(j["area"], "id");
+            p.area_name = sstr(j["area"], "name");
+        }
+        p.tags = parse_tags(j);
+        p.genres = parse_genres(j);
+        p.same_as = parse_sameas(j);
+        return p;
+    }
+    // Keys mirror IPlace.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"name", name},
+                  {"type", type},
+                  {"disambiguation", disambiguation},
+                  {"address", address}};
+        if (has_coords)
+            o["coordinates"] = {{"latitude", latitude}, {"longitude", longitude}};
+        if (!begin.empty() || !end.empty())
+            o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        if (!area_id.empty()) o["area"] = {{"id", area_id}, {"name", area_name}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Event {
+    static constexpr std::string_view endpoint = "event";
+    static constexpr std::string_view list_key = "events";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "events";
+    // Mirrors BrowseEventsEntityParams.
+    static constexpr std::array<std::string_view, 4> browse_links = {
+        "area", "artist", "collection", "place"};
+    // Mirrors EventIncludes (19).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
+
+    std::string id, type, name, disambiguation, time, begin, end;
+    bool cancelled = false, ended = false;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Event from(const json& j) {
+        Event e;
+        e.id = sstr(j, "id");
+        e.type = sstr(j, "type");
+        e.name = sstr(j, "name");
+        e.disambiguation = sstr(j, "disambiguation");
+        e.time = sstr(j, "time");
+        e.cancelled = sbool(j, "cancelled");
+        if (j.contains("life-span") && j["life-span"].is_object()) {
+            e.begin = sstr(j["life-span"], "begin");
+            e.end = sstr(j["life-span"], "end");
+            e.ended = sbool(j["life-span"], "ended");
+        }
+        e.tags = parse_tags(j);
+        e.genres = parse_genres(j);
+        e.same_as = parse_sameas(j);
+        return e;
+    }
+    // Keys mirror IEvent.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"name", name},
+                  {"type", type},
+                  {"disambiguation", disambiguation},
+                  {"time", time},
+                  {"cancelled", cancelled}};
+        if (!begin.empty() || !end.empty())
+            o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Series {
+    static constexpr std::string_view endpoint = "series";
+    static constexpr std::string_view list_key = "series";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "series";
+    static constexpr std::array<std::string_view, 1> browse_links = {"collection"};
+    // Mirrors SeriesIncludes (19).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
+
+    std::string id, type, name, disambiguation;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Series from(const json& j) {
+        Series s;
+        s.id = sstr(j, "id");
+        s.type = sstr(j, "type");
+        s.name = sstr(j, "name");
+        s.disambiguation = sstr(j, "disambiguation");
+        s.tags = parse_tags(j);
+        s.genres = parse_genres(j);
+        s.same_as = parse_sameas(j);
+        return s;
+    }
+    // Keys mirror ISeries.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"name", name},
+                  {"type", type},
+                  {"disambiguation", disambiguation}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Instrument {
+    static constexpr std::string_view endpoint = "instrument";
+    static constexpr std::string_view list_key = "instruments";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "instruments";
+    static constexpr std::array<std::string_view, 1> browse_links = {"collection"};
+    // Mirrors InstrumentIncludes (19).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
+
+    std::string id, type, name, disambiguation, description;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Instrument from(const json& j) {
+        Instrument v;
+        v.id = sstr(j, "id");
+        v.type = sstr(j, "type");
+        v.name = sstr(j, "name");
+        v.disambiguation = sstr(j, "disambiguation");
+        v.description = sstr(j, "description");
+        v.tags = parse_tags(j);
+        v.genres = parse_genres(j);
+        v.same_as = parse_sameas(j);
+        return v;
+    }
+    // Keys mirror IInstrument.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"name", name},
+                  {"type", type},
+                  {"disambiguation", disambiguation},
+                  {"description", description}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Collection {
+    static constexpr std::string_view endpoint = "collection";
+    static constexpr std::string_view list_key = "collections";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = false; // no search endpoint in TS
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    static constexpr std::string_view browse_key = "collections";
+    // Mirrors BrowseCollectionsEntityParams.
+    static constexpr std::array<std::string_view, 10> browse_links = {
+        "area", "artist", "editor", "event", "label",
+        "place", "recording", "release", "release-group", "work"};
+    // Mirrors CollectionIncludes = MiscIncludes | RelationsIncludes
+    //   | user-collections (20).
+    static constexpr std::array<std::string_view, 20> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels", "user-collections"};
+
+    std::string id, type, name, editor, entity_type;
+    int recording_count = 0;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
+    static Collection from(const json& j) {
+        Collection c;
+        c.id = sstr(j, "id");
+        c.type = sstr(j, "type");
+        c.name = sstr(j, "name");
+        c.editor = sstr(j, "editor");
+        c.entity_type = sstr(j, "entity-type");
+        c.recording_count = as_int(j, "recording-count");
+        c.tags = parse_tags(j);
+        c.genres = parse_genres(j);
+        c.same_as = parse_sameas(j);
+        return c;
+    }
+    // Keys mirror ICollection.
+    json to_json() const {
+        json o = {{"id", id},
+                  {"name", name},
+                  {"type", type},
+                  {"editor", editor},
+                  {"entity-type", entity_type},
+                  {"recording-count", recording_count}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Url {
+    static constexpr std::string_view endpoint = "url";
+    static constexpr std::string_view list_key = "urls";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = true;
+    static constexpr bool browsable = true;
+    // Browse urls by resource URI (not an MBID).
+    static constexpr std::string_view browse_key = "urls";
+    static constexpr std::array<std::string_view, 1> browse_links = {"resource"};
+    // Mirrors UrlIncludes = RelationsIncludes (13).
+    static constexpr std::array<std::string_view, 13> allowed_inc = {
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
+
+    std::string id, resource;
+    std::vector<SameAs> same_as;
+    static Url from(const json& j) {
+        Url u;
+        u.id = sstr(j, "id");
+        u.resource = sstr(j, "resource");
+        u.same_as = parse_sameas(j);
+        return u;
+    }
+    // Keys mirror IUrl.
+    json to_json() const {
+        json o = {{"id", id}, {"resource", resource}};
+        o["sameAs"] = sameas_json(same_as);
+        return o;
+    }
+};
+
+struct Annotation {
+    static constexpr std::string_view endpoint = "annotation";
+    static constexpr std::string_view list_key = "annotations";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = false; // no lookup endpoint in TS
+    static constexpr bool browsable = false;
+
+    std::string entity, name, text, type;
+    static Annotation from(const json& j) {
+        return {sstr(j, "entity"), sstr(j, "name"), sstr(j, "text"),
+                sstr(j, "type")};
+    }
+    // Keys mirror IAnnotation.
+    json to_json() const {
+        return {{"entity", entity},
+                {"name", name},
+                {"text", text},
+                {"type", type}};
+    }
+};
+
+struct TagEntity {
+    static constexpr std::string_view endpoint = "tag";
+    static constexpr std::string_view list_key = "tags";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = false; // no lookup endpoint in TS
+    static constexpr bool browsable = false;
+
+    std::string name;
+    static TagEntity from(const json& j) {
+        return {sstr(j, "name")};
+    }
+    // Keys mirror ITag.
+    json to_json() const {
+        return {{"name", name}};
+    }
+};
+
+struct CdStub {
+    static constexpr std::string_view endpoint = "cdstub";
+    static constexpr std::string_view list_key = "cdstubs";
+    static constexpr std::string_view default_inc = "";
+    static constexpr bool searchable = true;
+    static constexpr bool lookable = false; // no lookup endpoint in TS
+    static constexpr bool browsable = false;
+
+    std::string id, title, artist, barcode, comment;
+    static CdStub from(const json& j) {
+        return {sstr(j, "id"), sstr(j, "title"), sstr(j, "artist"),
+                sstr(j, "barcode"), sstr(j, "comment")};
+    }
+    // Keys mirror ICdStub.
+    json to_json() const {
+        return {{"id", id},
+                {"title", title},
+                {"artist", artist},
+                {"barcode", barcode},
+                {"comment", comment}};
+    }
+};
+
 // The registry: adding an entity = one line here.
 using AllEntities =
-    std::tuple<Artist, Release, Recording, Disc>;
+    std::tuple<Artist, Release, Recording, Disc, Label, ReleaseGroup, Work,
+               Area, Place, Event, Series, Instrument, Collection, Url,
+               Annotation, TagEntity, CdStub>;
 
 // ---------------------------------------------------------------------------
 // Generic operations derived from the entity type. No per-entity strings.
@@ -665,7 +1317,13 @@ json do_search(const json& p) {
     json arr = json::array();
     const std::string key(E::list_key);
     if (raw.contains(key) && raw[key].is_array())
-        for (const auto& e : raw[key]) arr.push_back(E::from(e).to_json());
+        for (const auto& e : raw[key]) {
+            // IMatch: search hits carry a score.
+            json item = E::from(e).to_json();
+            if (e.contains("score") && e["score"].is_number())
+                item["score"] = e["score"];
+            arr.push_back(std::move(item));
+        }
     result[E::list_key] = std::move(arr);
     return result;
 }
@@ -700,6 +1358,7 @@ void check_inc(const std::string& inc) {
 
 template <typename E>
 json do_lookup(const json& p) {
+    static_assert(E::lookable, "entity is search-only");
     PMap pm;
     std::string inc = get_str(p, "inc");
     if (inc.empty()) inc = std::string(E::default_inc);
@@ -712,12 +1371,64 @@ json do_lookup(const json& p) {
     return E::from(raw).to_json();
 }
 
+// Mirrors musicbrainz-api browse(): /<entity>?<linked>=<mbid>,
+// exactly one linked key from the entity's BrowseXEntityParams set.
+// Response keys mirror IBrowseXResult: <browse_key> (+ <endpoint>-count
+// / <endpoint>-offset); area's list is a single object, normalized here.
+template <typename E>
+json do_browse(const json& p) {
+    static_assert(E::browsable, "entity is not browsable");
+    PMap pm;
+    std::string linked;
+    int found = 0;
+    for (auto a : E::browse_links) {
+        const std::string k(a);
+        auto it = p.find(k);
+        if (it != p.end() && !it->is_null()) {
+            if (!it->is_string())
+                throw jsonrpc::JsonRpcException(jsonrpc::spec::kInvalidParams,
+                                                "browse link must be a string");
+            linked = k;
+            pm[k] = it->get<std::string>();
+            ++found;
+        }
+    }
+    if (found != 1)
+        throw jsonrpc::JsonRpcException(
+            jsonrpc::spec::kInvalidParams,
+            "browse needs exactly one linked entity");
+    pm["limit"] = std::to_string(get_int(p, "limit", 10));
+    pm["offset"] = std::to_string(get_int(p, "offset", 0));
+    std::string inc = get_str(p, "inc");
+    if (!inc.empty()) {
+        check_inc<E>(inc);
+        pm["inc"] = inc;
+    }
+    (void)linked;
+    json raw = json::parse(mb_get(bpath(std::string(E::endpoint), "", "", pm)));
+    const std::string ep(E::endpoint), bk(E::browse_key);
+    json result = {{ep + "-count", as_int(raw, (ep + "-count").c_str())},
+                   {ep + "-offset", as_int(raw, (ep + "-offset").c_str())}};
+    json arr = json::array();
+    if (raw.contains(bk)) {
+        if (raw[bk].is_array())
+            for (const auto& e : raw[bk]) arr.push_back(E::from(e).to_json());
+        else if (raw[bk].is_object())
+            arr.push_back(E::from(raw[bk]).to_json());
+    }
+    result[bk] = std::move(arr);
+    return result;
+}
+
 template <typename E>
 void register_entity(jsonrpc::Conn& s) {
     const std::string ep(E::endpoint);
     if constexpr (E::searchable)
         s.register_method("search-" + ep, do_search<E>);
-    s.register_method("lookup-" + ep, do_lookup<E>);
+    if constexpr (E::lookable)
+        s.register_method("lookup-" + ep, do_lookup<E>);
+    if constexpr (E::browsable)
+        s.register_method("browse-" + ep, do_browse<E>);
 }
 
 template <typename... Es>
