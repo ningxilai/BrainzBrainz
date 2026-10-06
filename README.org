@@ -1,15 +1,15 @@
-* musicbrainz — MusicBrainz terminal client
-
-Query the MusicBrainz API from the terminal. Human-readable output by
-default, =--json= for scripts. Zero dependencies besides =curl= and a
-C++20 compiler (JSON via vendored [[https://github.com/nlohmann/json][nlohmann/json]]).
-
-** Build
+* Build
 
 #+begin_src sh
   make          # builds ./musicbrainz and ./bookbrainz
   make clean
 #+end_src
+
+* musicbrainz — MusicBrainz terminal client
+
+Query the MusicBrainz API from the terminal. Human-readable output by
+default, =--json= for scripts. Zero dependencies besides =curl= and a
+C++20 compiler (JSON via vendored [[https://github.com/nlohmann/json][nlohmann/json]]).
 
 ** Use
 
@@ -29,6 +29,8 @@ One request per second max, per MusicBrainz rate-limit policy.
 
 Same shape, against =api.bookbrainz.org= (entities: author edition
 edition-group publisher series work).
+
+** Use
 
 #+begin_src sh
   bookbrainz search author --query "Tolkien"
