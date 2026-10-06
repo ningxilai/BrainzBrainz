@@ -209,10 +209,94 @@ struct NameCredit {
     }
 };
 
+struct Tag {
+    std::string name;
+    int count = 0;
+    // Mirrors WS2 "tags": [{count, name}].
+    static Tag from(const json& j) {
+        return {sstr(j, "name"), as_int(j, "count")};
+    }
+    json to_json() const {
+        return {{"name", name}, {"count", count}};
+    }
+};
+
+struct Genre {
+    std::string id, name, disambiguation;
+    int count = 0;
+    // Mirrors WS2 "genres": [{id, name, disambiguation, count}].
+    static Genre from(const json& j) {
+        return {sstr(j, "id"), sstr(j, "name"), sstr(j, "disambiguation"),
+                as_int(j, "count")};
+    }
+    json to_json() const {
+        return {{"id", id}, {"name", name}, {"disambiguation", disambiguation}, {"count", count}};
+    }
+};
+
+struct SameAs {
+    std::string type, url;
+    // Derived from WS2 relations targeting URLs (mirrors JSON-LD sameAs
+    // used by BrainzWrap, but keeps the relation type alongside).
+    static bool try_from(const json& r, SameAs& out) {
+        if (!r.contains("url") || !r["url"].is_object()) return false;
+        std::string u = sstr(r["url"], "resource");
+        if (u.empty()) return false;
+        out.type = sstr(r, "type");
+        out.url = u;
+        return true;
+    }
+    json to_json() const {
+        return {{"type", type}, {"url", url}};
+    }
+};
+
+static std::vector<Tag> parse_tags(const json& j) {
+    std::vector<Tag> v;
+    if (j.contains("tags") && j["tags"].is_array())
+        for (const auto& t : j["tags"]) v.push_back(Tag::from(t));
+    return v;
+}
+
+static std::vector<Genre> parse_genres(const json& j) {
+    std::vector<Genre> v;
+    if (j.contains("genres") && j["genres"].is_array())
+        for (const auto& g : j["genres"]) v.push_back(Genre::from(g));
+    return v;
+}
+
+static std::vector<SameAs> parse_sameas(const json& j) {
+    std::vector<SameAs> v;
+    if (j.contains("relations") && j["relations"].is_array())
+        for (const auto& r : j["relations"]) {
+            SameAs s;
+            if (SameAs::try_from(r, s)) v.push_back(s);
+        }
+    return v;
+}
+
+static json tags_json(const std::vector<Tag>& v) {
+    json a = json::array();
+    for (const auto& t : v) a.push_back(t.to_json());
+    return a;
+}
+
+static json genres_json(const std::vector<Genre>& v) {
+    json a = json::array();
+    for (const auto& g : v) a.push_back(g.to_json());
+    return a;
+}
+
+static json sameas_json(const std::vector<SameAs>& v) {
+    json a = json::array();
+    for (const auto& s : v) a.push_back(s.to_json());
+    return a;
+}
+
 struct Artist {
     static constexpr std::string_view endpoint = "artist";
     static constexpr std::string_view list_key = "artists";
-    static constexpr std::string_view default_inc = "";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
     static constexpr bool searchable = true;
     // Mirrors ArtistIncludes = MiscIncludes | RelationsIncludes
     //   | recordings | releases | release-groups | works.
@@ -227,6 +311,9 @@ struct Artist {
     std::string id, type, name, sort_name, gender, country, disambiguation;
     std::string begin, end;
     bool ended = false;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
 
     static Artist from(const json& j) {
         Artist a;
@@ -242,6 +329,9 @@ struct Artist {
             a.end = sstr(j["life-span"], "end");
             a.ended = sbool(j["life-span"], "ended");
         }
+        a.tags = parse_tags(j);
+        a.genres = parse_genres(j);
+        a.same_as = parse_sameas(j);
         return a;
     }
     // Keys mirror IArtist: sort-name, life-span{begin,end,ended}.
@@ -255,6 +345,9 @@ struct Artist {
                   {"disambiguation", disambiguation}};
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
         return o;
     }
 };
@@ -339,7 +432,7 @@ struct Release {
     static constexpr std::string_view endpoint = "release";
     static constexpr std::string_view list_key = "releases";
     static constexpr std::string_view default_inc =
-        "artists+labels+recordings+release-groups+artist-credits+discids";
+        "artists+labels+recordings+release-groups+artist-credits+discids+tags+genres+url-rels";
     static constexpr bool searchable = true;
     // Mirrors ReleaseIncludes = MiscIncludes | SubQueryIncludes
     //   | RelationsIncludes | artists | collections | labels | recordings
@@ -360,6 +453,9 @@ struct Release {
     std::string rg_id, rg_title, rg_primary;
     std::vector<NameCredit> credit;
     std::vector<Medium> media;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
     std::vector<LabelInfo> label_info;
     static Release from(const json& j) {
         Release r;
@@ -384,6 +480,9 @@ struct Release {
         if (j.contains("label-info") && j["label-info"].is_array())
             for (const auto& l : j["label-info"])
                 r.label_info.push_back(LabelInfo::from(l));
+        r.tags = parse_tags(j);
+        r.genres = parse_genres(j);
+        r.same_as = parse_sameas(j);
         return r;
     }
     // Keys mirror IRelease: artist-credit, release-group{primary-type},
@@ -408,6 +507,9 @@ struct Release {
         json la = json::array();
         for (const auto& l : label_info) la.push_back(l.to_json());
         o["label-info"] = std::move(la);
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
         return o;
     }
 };
@@ -415,7 +517,7 @@ struct Release {
 struct Recording {
     static constexpr std::string_view endpoint = "recording";
     static constexpr std::string_view list_key = "recordings";
-    static constexpr std::string_view default_inc = "artists+releases+isrcs+artist-credits";
+    static constexpr std::string_view default_inc = "artists+releases+isrcs+artist-credits+tags+genres+url-rels";
     static constexpr bool searchable = true;
     // Mirrors RecordingIncludes = MiscIncludes | RelationsIncludes
     //   | SubQueryIncludes | artists | releases | isrcs.
@@ -435,6 +537,9 @@ struct Recording {
     bool video = false;
     std::vector<NameCredit> credit;
     std::vector<std::string> release_ids, release_titles, isrcs;
+    std::vector<Tag> tags;
+    std::vector<Genre> genres;
+    std::vector<SameAs> same_as;
     static Recording from(const json& j) {
         Recording r;
         r.id = sstr(j, "id");
@@ -454,6 +559,9 @@ struct Recording {
         if (j.contains("isrcs") && j["isrcs"].is_array())
             for (const auto& s : j["isrcs"])
                 if (s.is_string()) r.isrcs.push_back(s.get<std::string>());
+        r.tags = parse_tags(j);
+        r.genres = parse_genres(j);
+        r.same_as = parse_sameas(j);
         return r;
     }
     // Keys mirror IRecording: artist-credit, first-release-date.
@@ -473,6 +581,9 @@ struct Recording {
                           {"title", i < release_titles.size() ? release_titles[i] : ""}});
         o["releases"] = std::move(ra);
         o["isrcs"] = isrcs;
+        o["tags"] = tags_json(tags);
+        o["genres"] = genres_json(genres);
+        o["sameAs"] = sameas_json(same_as);
         return o;
     }
 };

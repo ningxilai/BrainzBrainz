@@ -79,7 +79,36 @@
               (log-ok "entry builder")
             (log-fail (format "entry builder unexpected: %S" ents))))
 
-        ;; Test 5: detail renderer runs headless
+        ;; Test 5: Radiohead lookup carries tags/genres/sameAs
+        (let* ((res (mb-bridge--call "lookup-artist"
+                                     '(:id "a74b1b7f-71a5-4011-9441-d0b5e4122711")))
+               (tags (plist-get res :tags))
+               (genres (plist-get res :genres))
+               (links (plist-get res :sameAs)))
+          (if (and (> (seq-length tags) 0)
+                   (> (seq-length genres) 0)
+                   (> (seq-length links) 0)
+                   (plist-get (aref tags 0) :name)
+                   (plist-get (aref links 0) :url))
+              (log-ok "tags/genres/sameAs present")
+            (log-fail (format "tags/genres/sameAs missing: %S" res))))
+
+        ;; Test 6: detail sections render headless
+        (let ((artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
+                        :life-span (:begin "1926" :end "1991")
+                        :tags [(:name "jazz" :count 5)]
+                        :genres [(:name "jazz" :count 9)]
+                        :sameAs [(:type "wikidata" :url "https://example.invalid/x")])) )
+          (with-temp-buffer
+            (mb--detail-artist artist)
+            (if (and (string-match-p "Tags (1)" (buffer-string))
+                     (string-match-p "Genres (1)" (buffer-string))
+                     (string-match-p "Links (1)" (buffer-string))
+                     (string-match-p "https://example.invalid/x" (buffer-string)))
+                (log-ok "tags/genres/sameAs sections render")
+              (log-fail (format "sections missing: %S" (buffer-string))))))
+
+        ;; Test 7: detail renderer runs headless
         (with-temp-buffer
           (mb--detail-artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
                                :disambiguation "" :life-span (:begin "1926" :end "1991")))

@@ -276,6 +276,49 @@
     (insert (propertize (format "%-14s " label) 'face 'bold)
             (format "%s\n" value))))
 
+(defun mb--tags-section (entity)
+  "Render ENTITY's tags list, mirroring BrainzWrap's tags section."
+  (when-let* ((tags (plist-get entity :tags)))
+    (let ((items (seq-into tags 'list)))
+      (when items
+        (insert (format "\nTags (%d)\n" (seq-length items)))
+        (dolist (tag items)
+          (insert (format "- %s%s\n"
+                          (or (plist-get tag :name) "")
+                          (if-let* ((c (plist-get tag :count)))
+                              (format " (%s)" c)
+                            ""))))))))
+
+(defun mb--genres-section (entity)
+  "Render ENTITY's genres list."
+  (when-let* ((genres (plist-get entity :genres)))
+    (let ((items (seq-into genres 'list)))
+      (when items
+        (insert (format "\nGenres (%d)\n" (seq-length items)))
+        (dolist (g items)
+          (insert (format "- %s%s\n"
+                          (or (plist-get g :name) "")
+                          (if-let* ((c (plist-get g :count)))
+                              (format " (%s)" c)
+                            ""))))))))
+
+(defun mb--sameas-section (entity)
+  "Render ENTITY's sameAs external links as clickable buttons."
+  (when-let* ((links (plist-get entity :sameAs)))
+    (let ((items (seq-into links 'list)))
+      (when items
+        (insert (format "\nLinks (%d)\n" (seq-length items)))
+        (dolist (l items)
+          (let ((url (plist-get l :url)))
+            (insert (format "- %s "
+                            (or (plist-get l :type) "link")))
+            (when (and url (not (string-empty-p url)))
+              (insert-text-button url
+                                  'action (lambda (_) (browse-url url))
+                                  'follow-link t
+                                  'help-echo url))
+            (insert "\n")))))))
+
 (defun mb--mbid-button (label entity id)
   "Insert LABEL text; RET on it looks up ENTITY/ID."
   (insert-text-button (or label id)
@@ -292,7 +335,10 @@
   (when-let* ((ls (plist-get a :life-span)))
     (insert "\nLife Span\n")
     (mb--meta "Begin" (plist-get ls :begin))
-    (mb--meta "End" (plist-get ls :end))))
+    (mb--meta "End" (plist-get ls :end)))
+  (mb--tags-section a)
+  (mb--genres-section a)
+  (mb--sameas-section a))
 
 (defun mb--detail-release (r)
   (mb--meta "Status" (plist-get r :status))
@@ -313,6 +359,9 @@
                         (if-let* ((cat (plist-get l :catalog-number)))
                             (format " (%s)" cat)
                           ""))))))
+  (mb--tags-section r)
+  (mb--genres-section r)
+  (mb--sameas-section r)
   (when-let* ((media (plist-get r :media)))
     (seq-doseq (m (seq-into media 'list))
       (insert (format "\n[%s]\n" (or (plist-get m :format) "Medium")))
@@ -330,6 +379,9 @@
   (mb--meta "Artists" (mb--credit-string r))
   (when-let* ((isrcs (plist-get r :isrcs)))
     (mb--meta "ISRCs" (string-join (seq-into isrcs 'list) ", ")))
+  (mb--tags-section r)
+  (mb--genres-section r)
+  (mb--sameas-section r)
   (when-let* ((rels (plist-get r :releases)))
     (insert (format "\nReleases (%d)\n" (seq-length rels)))
     (seq-doseq (rel (seq-into rels 'list))
