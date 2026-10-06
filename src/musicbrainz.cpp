@@ -1255,15 +1255,17 @@ struct Event {
 struct Series {
     static constexpr std::string_view endpoint = "series";
     static constexpr std::string_view list_key = "series";
-    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+url-rels";
+    // NOTE: server rejects inc=ratings here though TS MiscIncludes lists it.
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
     static constexpr std::string_view browse_key = "series";
     static constexpr std::array<std::string_view, 1> browse_links = {"collection"};
     // Mirrors SeriesIncludes (19).
-    static constexpr std::array<std::string_view, 19> allowed_inc = {
-        "aliases", "annotation", "tags", "genres", "ratings", "media",
+    static constexpr std::array<std::string_view, 18> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "media",
+        // NOTE: no "ratings": server 400s, TS MiscIncludes is wrong here.
         "area-rels", "artist-rels", "event-rels", "genre-rels",
         "instrument-rels", "label-rels", "place-rels", "recording-rels",
         "release-rels", "release-group-rels", "series-rels", "url-rels",
@@ -1303,15 +1305,16 @@ struct Series {
 struct Instrument {
     static constexpr std::string_view endpoint = "instrument";
     static constexpr std::string_view list_key = "instruments";
-    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+url-rels";
+    // NOTE: server rejects inc=ratings here though TS MiscIncludes lists it.
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
     static constexpr std::string_view browse_key = "instruments";
     static constexpr std::array<std::string_view, 1> browse_links = {"collection"};
     // Mirrors InstrumentIncludes (19).
-    static constexpr std::array<std::string_view, 19> allowed_inc = {
-        "aliases", "annotation", "tags", "genres", "ratings", "media",
+    static constexpr std::array<std::string_view, 18> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "media",
         "area-rels", "artist-rels", "event-rels", "genre-rels",
         "instrument-rels", "label-rels", "place-rels", "recording-rels",
         "release-rels", "release-group-rels", "series-rels", "url-rels",
