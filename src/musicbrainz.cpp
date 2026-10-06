@@ -1,33 +1,36 @@
-// musicbrainz — MusicBrainz WS2 (fmt=json) <-> Emacs JSON-RPC bridge.
+// musicbrainz — MusicBrainz WS2 (fmt=json) terminal client.
 //
 // Thorough type-as-value design: every entity is a tag type carrying
-// endpoint / list-key / default-inc / from / to_json. Method names,
-// registration, search and lookup are all derived from the type via
-// templates + fold expressions. Adding an entity = one line in the
-// type list at the bottom. No stringly dispatch in main().
+// endpoint / list-key / default-inc / from / to_json. Dispatch is
+// derived from the type. Adding an entity = one line in the type list.
 //
 // Zero external C deps: transport is popen("curl"), JSON is the vendored
-// nlohmann/json pulled in by jsonrpc.hpp.
+// nlohmann/json. Human-readable terminal output by default, --json for
+// machine-readable output.
 
-#include "jsonrpc.hpp"
+#include "json.hpp"
 
 #include <array>
-#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
-#include <csignal>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <mutex>
-#include <poll.h>
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 using json = nlohmann::json;
+
+// CLI errors: message to stderr, nonzero exit. Usage errors exit 2,
+// request/runtime failures exit 1.
+struct CliError : std::runtime_error {
+    int code;
+    CliError(int c, const std::string& m) : std::runtime_error(m), code(c) {}
+};
 
 // ---------------------------------------------------------------------------
 // URL helpers (logic merged from libmusicbrainz5 Query.cc)
@@ -79,29 +82,11 @@ std::mutex rl_mtx;
 auto rl_last = std::chrono::steady_clock::now() - std::chrono::seconds(2);
 } // namespace
 
-// RAII wrappers: destructors own resource release, so early
-// returns and exceptions can never leak fds or FILE handles.
-struct PipeFds {
-    int r = -1, w = -1;
-    PipeFds() {
-        int p[2] = {-1, -1};
-        if (pipe(p) == -1) throw std::runtime_error("pipe failed");
-        r = p[0];
-        w = p[1];
-    }
-    PipeFds(const PipeFds&) = delete;
-    PipeFds& operator=(const PipeFds&) = delete;
-    ~PipeFds() {
-        if (r != -1) close(r);
-        if (w != -1) close(w);
-    }
-    void notify(const char* m, size_t n) const {
-        if (w != -1) write(w, m, n);
-    }
-};
-
+// RAII wrapper: destructor owns pclose, so early returns and
+// exceptions can never leak the FILE handle.
 struct CurlPipe {
     FILE* f = nullptr;
+    int rc = -1;
     explicit CurlPipe(const std::string& cmd) : f(popen(cmd.c_str(), "r")) {
         if (!f) throw std::runtime_error("popen failed");
     }
@@ -116,6 +101,14 @@ struct CurlPipe {
         while (fgets(b.data(), b.size(), f)) d += b.data();
         return d;
     }
+    // -f makes curl exit nonzero on HTTP errors; capture it once.
+    int finish() {
+        if (f) {
+            rc = pclose(f);
+            f = nullptr;
+        }
+        return rc;
+    }
 };
 
 static std::string fetch(const std::string& path) {
@@ -129,9 +122,13 @@ static std::string fetch(const std::string& path) {
     }
     const std::string url = std::string("https://musicbrainz.org") + path;
     const std::string cmd =
-        "curl -s -H 'User-Agent: Emacs-musicbrainz/0.1.0 (emacs-stdio-jsonrpc)' '" + url + "'";
+        "curl -s -f -H 'User-Agent: musicbrainz-cli/0.1.0 (+https://github.com/ningxilai/emacs-stdio-jsonrpc)' '" +
+        url + "'";
     CurlPipe p(cmd);
-    return p.read_all();
+    std::string body = p.read_all();
+    if (p.finish() != 0)
+        throw CliError(1, "request failed: " + url);
+    return body;
 }
 
 // ---------------------------------------------------------------------------
@@ -1548,8 +1545,7 @@ inline std::string get_str(const json& p, const char* k, const std::string& d = 
     auto it = p.find(k);
     if (it == p.end() || it->is_null()) return d;
     if (!it->is_string())
-        throw jsonrpc::JsonRpcException(jsonrpc::spec::kInvalidParams,
-                                        "expected string param");
+        throw CliError(2, "expected string param");
     return it->get<std::string>();
 }
 
@@ -1572,11 +1568,8 @@ void check_inc(const std::string& inc) {
                 break;
             }
         if (!ok)
-            throw jsonrpc::JsonRpcException(
-                jsonrpc::spec::kInvalidParams,
-                ("unknown inc '" + std::string(tok) + "' for " +
-                 std::string(E::endpoint))
-                    .c_str());
+            throw CliError(2, "unknown inc '" + std::string(tok) + "' for " +
+                                  std::string(E::endpoint));
         i = j;
     }
 }
@@ -1642,17 +1635,14 @@ json do_browse(const json& p) {
         auto it = p.find(k);
         if (it != p.end() && !it->is_null()) {
             if (!it->is_string())
-                throw jsonrpc::JsonRpcException(jsonrpc::spec::kInvalidParams,
-                                                "browse link must be a string");
+                throw CliError(2, "browse link must be a string");
             linked = k;
             pm[k] = it->get<std::string>();
             ++found;
         }
     }
     if (found != 1)
-        throw jsonrpc::JsonRpcException(
-            jsonrpc::spec::kInvalidParams,
-            "browse needs exactly one linked entity");
+        throw CliError(2, "browse needs exactly one linked entity");
     pm["limit"] = std::to_string(get_int(p, "limit", 10));
     pm["offset"] = std::to_string(get_int(p, "offset", 0));
     std::string inc = get_str(p, "inc");
@@ -1676,89 +1666,564 @@ json do_browse(const json& p) {
     return result;
 }
 
+// Runtime dispatch table: entity string -> compile-time entity type.
+// Adding an entity = one line in AllEntities; everything else follows.
+using SearchFn = json (*)(const json&);
+using LookupFn = json (*)(const json&);
+using BrowseFn = json (*)(const json&);
+
+struct EntityOps {
+    bool searchable = false, lookable = false, browsable = false;
+    SearchFn search = nullptr;
+    LookupFn lookup = nullptr;
+    BrowseFn browse = nullptr;
+    std::string list_key, browse_key;
+};
+
 template <typename E>
-void register_entity(jsonrpc::Conn& s) {
-    const std::string ep(E::endpoint);
-    if constexpr (E::searchable)
-        s.register_method("search-" + ep, do_search<E>);
-    if constexpr (E::lookable)
-        s.register_method("lookup-" + ep, do_lookup<E>);
-    if constexpr (E::browsable)
-        s.register_method("browse-" + ep, do_browse<E>);
+void add_ops(std::map<std::string, EntityOps>& m) {
+    EntityOps o;
+    o.list_key = std::string(E::list_key);
+    if constexpr (E::searchable) {
+        o.searchable = true;
+        o.search = &do_search<E>;
+    }
+    if constexpr (E::lookable) {
+        o.lookable = true;
+        o.lookup = &do_lookup<E>;
+    }
+    if constexpr (E::browsable) {
+        o.browsable = true;
+        o.browse = &do_browse<E>;
+        o.browse_key = std::string(E::browse_key);
+    }
+    m.emplace(std::string(E::endpoint), std::move(o));
 }
 
 template <typename... Es>
-void register_all(jsonrpc::Conn& s, std::tuple<Es...>*) {
-    (register_entity<Es>(s), ...);
+std::map<std::string, EntityOps> build_ops(std::tuple<Es...>*) {
+    std::map<std::string, EntityOps> m;
+    (add_ops<Es>(m), ...);
+    return m;
 }
 
-void register_all_entities(jsonrpc::Conn& s) {
-    static AllEntities* tag = nullptr;
-    register_all(s, tag);
+// ---------------------------------------------------------------------------
+// Terminal rendering (human-readable; --json keeps machine output).
+// Field names mirror musicbrainz-api shapes (kebab-case).
+// ---------------------------------------------------------------------------
+static std::string jstr(const json& j, const char* k) {
+    auto it = j.find(k);
+    if (it == j.end() || it->is_null() || !it->is_string()) return {};
+    return it->get<std::string>();
+}
+
+static std::string ms_format(long long ms) {
+    if (ms <= 0) return "";
+    long long s = ms / 1000;
+    char b[32];
+    snprintf(b, sizeof b, "%lld:%02lld", s / 60, s % 60);
+    return b;
+}
+
+static std::string credit_string(const json& e) {
+    std::string r;
+    auto it = e.find("artist-credit");
+    if (it != e.end() && it->is_array())
+        for (const auto& c : *it)
+            r += jstr(c, "name") + jstr(c, "joinphrase");
+    return r;
+}
+
+static std::string summary(const std::string& entity, const json& it) {
+    if (entity == "artist") {
+        std::string r = jstr(it, "name");
+        std::string t = jstr(it, "type"), c = jstr(it, "country");
+        if (!t.empty()) r += " [" + t + "]";
+        if (!c.empty()) r += " (" + c + ")";
+        return r;
+    }
+    if (entity == "release") {
+        std::string r = jstr(it, "title"), d = jstr(it, "date"), s = jstr(it, "status");
+        if (!d.empty()) r += " (" + d + ")";
+        if (!s.empty()) r += " [" + s + "]";
+        std::string ac = credit_string(it);
+        if (!ac.empty()) r += " \xe2\x80\x94 " + ac;
+        return r;
+    }
+    if (entity == "recording") {
+        std::string r = jstr(it, "title");
+        auto f = it.find("length");
+        if (f != it.end() && f->is_number())
+            r += " (" + ms_format(f->get<long long>()) + ")";
+        std::string ac = credit_string(it);
+        if (!ac.empty()) r += " \xe2\x80\x94 " + ac;
+        return r;
+    }
+    if (entity == "label") {
+        std::string r = jstr(it, "name"), t = jstr(it, "type"), c = jstr(it, "label-code");
+        if (!t.empty()) r += " [" + t + "]";
+        if (!c.empty()) r += " (LC " + c + ")";
+        return r;
+    }
+    if (entity == "release-group") {
+        std::string r = jstr(it, "title"), d = jstr(it, "first-release-date"),
+                    p = jstr(it, "primary-type");
+        if (!d.empty()) r += " (" + d + ")";
+        if (!p.empty()) r += " [" + p + "]";
+        return r;
+    }
+    if (entity == "work") {
+        std::string r = jstr(it, "title"), t = jstr(it, "type"), l = jstr(it, "language");
+        if (!t.empty()) r += " [" + t + "]";
+        if (!l.empty()) r += " (" + l + ")";
+        return r;
+    }
+    if (entity == "cdstub") {
+        std::string r = jstr(it, "title"), a = jstr(it, "artist");
+        if (!a.empty()) r += " \xe2\x80\x94 " + a;
+        return r;
+    }
+    if (entity == "url") return jstr(it, "resource");
+    std::string r = jstr(it, "name");
+    if (r.empty()) r = jstr(it, "title");
+    std::string t = jstr(it, "type");
+    if (!t.empty()) r += " [" + t + "]";
+    return r;
+}
+
+static void meta_row(std::ostringstream& o, const char* label, const std::string& v) {
+    if (!v.empty()) o << label << ": " << v << "\n";
+}
+
+static void render_search(std::ostringstream& o, const std::string& entity,
+                          const std::string& desc, const json& res,
+                          const std::string& list_key) {
+    auto li = res.find(list_key);
+    size_t n = (li != res.end() && li->is_array()) ? li->size() : 0;
+    auto ci = res.find("count");
+    long long total = (ci != res.end() && ci->is_number()) ? ci->get<long long>() : (long long)n;
+    o << entity << " " << desc << " — " << n << " of " << total << "\n";
+    int i = 1;
+    if (li != res.end() && li->is_array())
+        for (const auto& e : *li) {
+            auto it = e.find("id");
+            std::string id = (it != e.end() && it->is_string()) ? it->get<std::string>() : "";
+            o << "  " << i++ << ". " << summary(entity, e) << "\n";
+            if (!id.empty()) o << "      " << id << "\n";
+        }
+}
+
+static void render_detail(std::ostringstream& o, const std::string& entity, const json& e);
+
+static void render_aliases(std::ostringstream& o, const json& e) {
+    auto it = e.find("aliases");
+    if (it != e.end() && it->is_array() && !it->empty()) {
+        o << "\nAliases (" << it->size() << ")\n";
+        for (const auto& a : *it) {
+            o << "- " << jstr(a, "name");
+            std::string lc = jstr(a, "locale"), ty = jstr(a, "type");
+            if (!lc.empty()) o << " [" << lc << "]";
+            if (!ty.empty()) o << " (" << ty << ")";
+            o << "\n";
+        }
+    }
+}
+
+static void render_rating(std::ostringstream& o, const json& e) {
+    auto it = e.find("rating");
+    if (it != e.end() && it->is_object()) {
+        auto v = it->find("value"), c = it->find("votes-count");
+        if (v != it->end() && v->is_number())
+            o << "Rating: " << v->get<double>() << " ("
+              << (c != it->end() && c->is_number() ? std::to_string(c->get<long long>()) : "?")
+              << " votes)\n";
+    }
+}
+
+static void render_tags_genres_links(std::ostringstream& o, const json& e) {
+    auto ti = e.find("tags");
+    if (ti != e.end() && ti->is_array() && !ti->empty()) {
+        o << "\nTags (" << ti->size() << ")\n";
+        for (const auto& t : *ti) {
+            o << "- " << jstr(t, "name");
+            auto c = t.find("count");
+            if (c != t.end() && c->is_number()) o << " (" << c->get<long long>() << ")";
+            o << "\n";
+        }
+    }
+    auto gi = e.find("genres");
+    if (gi != e.end() && gi->is_array() && !gi->empty()) {
+        o << "\nGenres (" << gi->size() << ")\n";
+        for (const auto& g : *gi) {
+            o << "- " << jstr(g, "name");
+            auto c = g.find("count");
+            if (c != g.end() && c->is_number()) o << " (" << c->get<long long>() << ")";
+            o << "\n";
+        }
+    }
+    auto li = e.find("sameAs");
+    if (li != e.end() && li->is_array() && !li->empty()) {
+        o << "\nLinks (" << li->size() << ")\n";
+        for (const auto& l : *li)
+            o << "- [" << jstr(l, "type") << "] " << jstr(l, "url") << "\n";
+    }
+}
+
+static void render_credit(std::ostringstream& o, const json& e) {
+    std::string ac = credit_string(e);
+    if (!ac.empty()) o << "Artists: " << ac << "\n";
+}
+
+static void render_lifespan(std::ostringstream& o, const json& e) {
+    auto it = e.find("life-span");
+    if (it != e.end() && it->is_object()) {
+        std::string b = jstr(*it, "begin"), en = jstr(*it, "end");
+        if (!b.empty() || !en.empty())
+            o << "\nLife Span\nBegin: " << b << "\nEnd: " << en << "\n";
+    }
+}
+
+static void render_releases(std::ostringstream& o, const json& e) {
+    auto it = e.find("releases");
+    if (it != e.end() && it->is_array() && !it->empty()) {
+        o << "\nReleases (" << it->size() << ")\n";
+        for (const auto& r : *it)
+            o << "- " << jstr(r, "title") << "\n  " << jstr(r, "id") << "\n";
+    }
+}
+
+static void render_detail(std::ostringstream& o, const std::string& entity, const json& e) {
+    meta_row(o, "ID", jstr(e, "id"));
+    if (entity == "artist") {
+        meta_row(o, "Type", jstr(e, "type"));
+        meta_row(o, "Country", jstr(e, "country"));
+        meta_row(o, "Sort Name", jstr(e, "sort-name"));
+        meta_row(o, "Disambiguation", jstr(e, "disambiguation"));
+        render_lifespan(o, e);
+        if (auto a = e.find("area"); a != e.end() && a->is_object())
+            meta_row(o, "Area", jstr(*a, "name"));
+    } else if (entity == "release") {
+        meta_row(o, "Title", jstr(e, "title"));
+        meta_row(o, "Status", jstr(e, "status"));
+        meta_row(o, "Quality", jstr(e, "quality"));
+        meta_row(o, "Packaging", jstr(e, "packaging"));
+        meta_row(o, "Date", jstr(e, "date"));
+        meta_row(o, "Country", jstr(e, "country"));
+        meta_row(o, "Barcode", jstr(e, "barcode"));
+        meta_row(o, "ASIN", jstr(e, "asin"));
+        render_credit(o, e);
+        if (auto g = e.find("release-group");
+            g != e.end() && g->is_object())
+            o << "Group: " << jstr(*g, "title") << " [" << jstr(*g, "primary-type")
+              << "]\n";
+        if (auto li = e.find("label-info");
+            li != e.end() && li->is_array() && !li->empty()) {
+            o << "\nLabels (" << li->size() << ")\n";
+            for (const auto& l : *li) {
+                std::string nm, cat = jstr(l, "catalog-number");
+                if (auto lb = l.find("label"); lb != l.end() && lb->is_object())
+                    nm = jstr(*lb, "name");
+                o << "- " << nm;
+                if (!cat.empty()) o << " (" << cat << ")";
+                o << "\n";
+            }
+        }
+        if (auto ev = e.find("release-events");
+            ev != e.end() && ev->is_array() && !ev->empty()) {
+            o << "\nEvents (" << ev->size() << ")\n";
+            for (const auto& v : *ev) {
+                o << "- " << jstr(v, "date");
+                if (auto ar = v.find("area"); ar != v.end() && ar->is_object())
+                    o << " (" << jstr(*ar, "name") << ")";
+                o << "\n";
+            }
+        }
+        if (auto m = e.find("media"); m != e.end() && m->is_array())
+            for (const auto& med : *m) {
+                o << "\n[" << jstr(med, "format") << "]\n";
+                if (auto t = med.find("tracks"); t != med.end() && t->is_array())
+                    for (const auto& tr : *t) {
+                        auto ln = tr.find("length");
+                        long long ms = (ln != tr.end() && ln->is_number())
+                                           ? ln->get<long long>()
+                                           : 0;
+                        o << "  " << jstr(tr, "number") << ". " << jstr(tr, "title")
+                          << " (" << ms_format(ms) << ")\n";
+                        if (auto rc = tr.find("recording");
+                            rc != tr.end() && rc->is_object())
+                            o << "      " << jstr(*rc, "id") << "\n";
+                    }
+            }
+    } else if (entity == "recording") {
+        meta_row(o, "Title", jstr(e, "title"));
+        meta_row(o, "Length", ms_format(as_ll(e, "length")));
+        auto vd = e.find("video");
+        o << "Video: " << ((vd != e.end() && vd->is_boolean() && vd->get<bool>()) ? "yes" : "no")
+          << "\n";
+        render_credit(o, e);
+        if (auto is = e.find("isrcs"); is != e.end() && is->is_array() && !is->empty()) {
+            o << "ISRCs: ";
+            bool first = true;
+            for (const auto& s : *is) {
+                if (!s.is_string()) continue;
+                if (!first) o << ", ";
+                o << s.get<std::string>();
+                first = false;
+            }
+            o << "\n";
+        }
+        meta_row(o, "First release", jstr(e, "first-release-date"));
+        render_releases(o, e);
+    } else if (entity == "discid") {
+        auto sc = e.find("sectors");
+        if (sc != e.end() && sc->is_number())
+            o << "Sectors: " << sc->get<long long>() << "\n";
+        render_releases(o, e);
+    } else if (entity == "label") {
+        meta_row(o, "Name", jstr(e, "name"));
+        meta_row(o, "Type", jstr(e, "type"));
+        meta_row(o, "Country", jstr(e, "country"));
+        meta_row(o, "Sort Name", jstr(e, "sort-name"));
+        meta_row(o, "Label Code", jstr(e, "label-code"));
+        meta_row(o, "Disambiguation", jstr(e, "disambiguation"));
+        if (auto a = e.find("area"); a != e.end() && a->is_object())
+            meta_row(o, "Area", jstr(*a, "name"));
+        render_lifespan(o, e);
+    } else if (entity == "release-group") {
+        meta_row(o, "Title", jstr(e, "title"));
+        meta_row(o, "Type", jstr(e, "type"));
+        meta_row(o, "Disambiguation", jstr(e, "disambiguation"));
+        meta_row(o, "First date", jstr(e, "first-release-date"));
+        meta_row(o, "Primary", jstr(e, "primary-type"));
+        render_credit(o, e);
+        render_releases(o, e);
+    } else if (entity == "work") {
+        meta_row(o, "Title", jstr(e, "title"));
+        meta_row(o, "Type", jstr(e, "type"));
+        meta_row(o, "Disambiguation", jstr(e, "disambiguation"));
+        meta_row(o, "Language", jstr(e, "language"));
+        render_credit(o, e);
+    } else {
+        // Generic fallback: scalar fields, then shared sections.
+        for (auto it = e.begin(); it != e.end(); ++it) {
+            if (it->is_string() && !it->get<std::string>().empty())
+                o << it.key() << ": " << it->get<std::string>() << "\n";
+            else if (it->is_number())
+                o << it.key() << ": " << it->dump() << "\n";
+            else if (it->is_boolean())
+                o << it.key() << ": " << (it->get<bool>() ? "true" : "false") << "\n";
+        }
+        render_lifespan(o, e);
+    }
+    // Shared sections (ratings/aliases where the model has them).
+    if (auto r = e.find("rating"); r != e.end() && r->is_object()) {
+        auto v = r->find("value"), c = r->find("votes-count");
+        if (v != r->end() && v->is_number())
+            o << "Rating: " << v->get<double>() << " ("
+              << (c != r->end() && c->is_number() ? std::to_string(c->get<long long>())
+                                                 : "?")
+              << " votes)\n";
+    }
+    if (auto al = e.find("aliases"); al != e.end() && al->is_array() && !al->empty()) {
+        o << "\nAliases (" << al->size() << ")\n";
+        for (const auto& a : *al) {
+            o << "- " << jstr(a, "name");
+            std::string lc = jstr(a, "locale"), ty = jstr(a, "type");
+            if (!lc.empty()) o << " [" << lc << "]";
+            if (!ty.empty()) o << " (" << ty << ")";
+            o << "\n";
+        }
+    }
+    render_tags_genres_links(o, e);
+}
+
+static void render_tags_genres_links(std::ostringstream& o, const json& e);
+
+// ---------------------------------------------------------------------------
+// CLI argument parsing.
+//   musicbrainz search <entity> --query Q [--limit N] [--offset N] [--inc I] [--json]
+//   musicbrainz lookup <entity> <mbid> [--inc I] [--json]
+//   musicbrainz browse <entity> --<link> <mbid> [--limit N] [--offset N] [--inc I] [--json]
+//   musicbrainz query --entity E [--id ID] [--param k=v ...]   (always JSON)
+// ---------------------------------------------------------------------------
+struct Args {
+    std::string op, entity, id, query, resource, inc;
+    int limit = 10, offset = 0;
+    bool json = false, help = false;
+    PMap params;
+    PMap extra; // browse link key -> value
+};
+
+static const char* kUsage =
+    "usage:\n"
+    "  musicbrainz search <entity> --query Q [--limit N] [--offset N] [--inc I] [--json]\n"
+    "  musicbrainz lookup <entity> <mbid> [--inc I] [--json]\n"
+    "  musicbrainz browse <entity> --<link> <mbid> [--limit N] [--offset N] [--inc I] [--json]\n"
+    "  musicbrainz query --entity E [--id ID] [--param k=v ...]\n"
+    "entities: artist release recording label release-group work area place\n"
+    "          event series instrument collection url annotation tag cdstub discid\n";
+
+static int parse_int_flag(const std::string& name, const std::string& v) {
+    try {
+        size_t n = 0;
+        int r = std::stoi(v, &n);
+        if (n != v.size() || r < 0) throw std::invalid_argument("");
+        return r;
+    } catch (...) {
+        throw CliError(2, "invalid integer for " + name + ": '" + v + "'");
+    }
+}
+
+static Args parse_args(int argc, char** argv) {
+    Args a;
+    std::vector<std::string> pos;
+    for (int i = 1; i < argc; ++i) {
+        std::string t = argv[i];
+        if (t == "-h" || t == "--help") {
+            a.help = true;
+            return a;
+        }
+        if (t == "--json") {
+            a.json = true;
+            continue;
+        }
+        if (t.rfind("--", 0) == 0) {
+            std::string k = t.substr(2), v;
+            auto eq = k.find('=');
+            if (eq != std::string::npos) {
+                v = k.substr(eq + 1);
+                k = k.substr(0, eq);
+            } else {
+                if (i + 1 >= argc) throw CliError(2, "flag --" + k + " needs a value");
+                v = argv[++i];
+            }
+            if (k == "query") a.query = v;
+            else if (k == "id") a.id = v;
+            else if (k == "entity") a.entity = v;
+            else if (k == "resource") a.resource = v;
+            else if (k == "limit") a.limit = parse_int_flag("--limit", v);
+            else if (k == "offset") a.offset = parse_int_flag("--offset", v);
+            else if (k == "inc") a.inc = v;
+            else if (k == "param") {
+                auto e2 = v.find('=');
+                if (e2 == std::string::npos)
+                    throw CliError(2, "--param needs k=v, got '" + v + "'");
+                a.params[v.substr(0, e2)] = v.substr(e2 + 1);
+            } else
+                a.extra[k] = v; // browse link keys pass through generically
+            continue;
+        }
+        pos.push_back(t);
+    }
+    if (pos.empty()) throw CliError(2, "missing subcommand\n" + std::string(kUsage));
+    a.op = pos[0];
+    if (a.op == "search" || a.op == "lookup" || a.op == "browse") {
+        if (pos.size() < 2) throw CliError(2, a.op + " needs an entity\n" + kUsage);
+        a.entity = pos[1];
+        if (a.op == "lookup") {
+            if (pos.size() < 3 && a.id.empty())
+                throw CliError(2, "lookup needs an mbid");
+            if (!a.id.empty() && pos.size() >= 3 && pos[2] != a.id)
+                throw CliError(2, "conflicting mbids");
+            if (a.id.empty()) a.id = pos[2];
+        } else if (pos.size() > 2)
+            throw CliError(2, "unexpected argument '" + pos[2] + "'");
+    } else if (a.op != "query")
+        throw CliError(2, "unknown subcommand '" + a.op + "'\n" + kUsage);
+    return a;
 }
 
 } // namespace musicbrainz
 
-namespace {
-std::atomic<bool> gq{false};
-musicbrainz::PipeFds* g_pipe = nullptr; // set in main; signal handler only writes
-} // namespace
+using namespace musicbrainz;
 
-static void sh(int) {
-    gq = true;
-    if (g_pipe) g_pipe->notify("quit", 4);
-}
-
-int main() {
-    musicbrainz::PipeFds pipe;
-    g_pipe = &pipe;
-    std::signal(SIGINT, sh);
-    std::signal(SIGTERM, sh);
-    auto wk = [&] { pipe.notify("wake", 4); };
-    jsonrpc::Conn s(wk, std::cin, std::cout, std::cerr,
-                     jsonrpc::Conn::kDefaultMaxContentLength, STDIN_FILENO);
-
-    s.register_notification("exit", [&](const jsonrpc::json&) {
-        gq = true;
-        pipe.notify("quit", 4);
-    });
-
-    // Raw passthrough: {"entity","id","resource","params":{...}} -> MB JSON.
-    s.register_method("query", [](const jsonrpc::json& p) -> jsonrpc::json {
-        const std::string en = musicbrainz::get_str(p, "entity");
-        const std::string id = musicbrainz::get_str(p, "id");
-        std::string rs;
-        if (auto it = p.find("resource"); it != p.end() && !it->is_null())
-            rs = it->get<std::string>();
-        musicbrainz::PMap pm;
-        if (auto it = p.find("params");
-            it != p.end() && it->is_object())
-            for (auto& [k, v] : it->items()) {
-                if (!v.is_string())
-                    throw jsonrpc::JsonRpcException(
-                        jsonrpc::spec::kInvalidParams, "params must be strings");
-                pm[k] = v.get<std::string>();
-            }
-        return jsonrpc::json::parse(musicbrainz::fetch(musicbrainz::bpath(en, id, rs, pm)));
-    });
-
-    musicbrainz::register_all_entities(s);
-
-    s.start();
-    struct pollfd f[2] = {{pipe.r, POLLIN, 0}, {STDIN_FILENO, POLLIN, 0}};
-    while (!gq && s.is_running()) {
-        int r = poll(f, 2, 10);
-        if (r > 0) {
-            if (f[0].revents & POLLIN) {
-                char b[64];
-                read(pipe.r, b, sizeof(b));
-            }
-            if (f[1].revents & POLLIN) s.process_queue();
+int main(int argc, char** argv) {
+    try {
+        Args a = parse_args(argc, argv);
+        if (a.help) {
+            std::cout << kUsage;
+            return 0;
         }
-        if (gq) break;
-        s.process_queue();
+        static const auto ops = [] {
+            static AllEntities* tag = nullptr;
+            return build_ops(tag);
+        }();
+        if (a.op == "query") {
+            if (a.entity.empty()) throw CliError(2, "query needs --entity");
+            PMap pm = a.params;
+            pm["fmt"] = "json";
+            std::cout << json::parse(fetch(bpath(a.entity, a.id, a.resource, pm))).dump(2)
+                      << "\n";
+            return 0;
+        }
+        auto it = ops.find(a.entity);
+        if (it == ops.end())
+            throw CliError(2, "unknown entity '" + a.entity + "'");
+        const EntityOps& eo = it->second;
+        json params = json::object(), res;
+        std::string list_key;
+        if (a.op == "search") {
+            if (!eo.searchable) throw CliError(2, "entity '" + a.entity + "' is not searchable");
+            if (a.query.empty()) throw CliError(2, "search needs --query");
+            params = {{"query", a.query},
+                      {"limit", a.limit},
+                      {"offset", a.offset}};
+            if (!a.inc.empty()) params["inc"] = a.inc;
+            res = eo.search(params);
+            list_key = eo.list_key;
+        } else if (a.op == "lookup") {
+            if (!eo.lookable) throw CliError(2, "entity '" + a.entity + "' is not lookable");
+            params = {{"id", a.id}};
+            if (!a.inc.empty()) params["inc"] = a.inc;
+            res = eo.lookup(params);
+            if (a.json) {
+                std::cout << res.dump(2) << "\n";
+                return 0;
+            }
+            std::ostringstream o;
+            render_detail(o, a.entity, res);
+            std::cout << o.str();
+            return 0;
+        } else if (a.op == "browse") {
+            if (!eo.browsable) throw CliError(2, "entity '" + a.entity + "' is not browsable");
+            params = json::object();
+            for (auto& [k, v] : a.extra) params[k] = v;
+            params["limit"] = a.limit;
+            params["offset"] = a.offset;
+            if (!a.inc.empty()) params["inc"] = a.inc;
+            res = eo.browse(params);
+            list_key = eo.browse_key;
+        } else
+            throw CliError(2, "unknown subcommand '" + a.op + "'");
+        if (a.json) {
+            std::cout << res.dump(2) << "\n";
+            return 0;
+        }
+        std::ostringstream o;
+        std::string desc = a.op == "browse" ? ("by " + a.extra.begin()->first + " " + a.extra.begin()->second)
+                                            : ("\"" + a.query + "\"");
+        auto li = res.find(list_key);
+        size_t n = (li != res.end() && li->is_array()) ? li->size() : 0;
+        auto ci = res.find("count");
+        if (ci == res.end())
+            ci = res.find(a.entity + "-count");
+        long long total = (ci != res.end() && ci->is_number()) ? ci->get<long long>() : (long long)n;
+        o << a.entity << " " << desc << " — " << n << " of " << total << "\n";
+        int i = 1;
+        if (li != res.end() && li->is_array())
+            for (const auto& e : *li) {
+                auto id = e.find("id");
+                std::string sid = (id != e.end() && id->is_string()) ? id->get<std::string>() : "";
+                o << "  " << i++ << ". " << summary(a.entity, e) << "\n";
+                if (!sid.empty()) o << "      " << sid << "\n";
+            }
+        std::cout << o.str();
+        return 0;
+    } catch (const CliError& e) {
+        std::cerr << "musicbrainz: error: " << e.what() << "\n";
+        return e.code;
+    } catch (const std::exception& e) {
+        std::cerr << "musicbrainz: error: " << e.what() << "\n";
+        return 1;
     }
-    s.stop();
-    g_pipe = nullptr;
-    return 0;
 }
