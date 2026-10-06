@@ -24,7 +24,7 @@ add_executable(example_linux example/example_linux.cpp)
 add_executable(bridge_test_server test/bridge_test_server.cpp)
 
 # MusicBrainz bridge (type-driven entity registry, fmt=json, popen-curl)
-add_executable(mb_bridge src/mb_bridge.cpp)
+add_executable(musicbrainz src/musicbrainz.cpp)
 
 if(WIN32)
   add_executable(example example/example.cpp)

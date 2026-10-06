@@ -1,4 +1,4 @@
-;;; mb_bridge.el --- MusicBrainz frontend over mb_bridge JSON-RPC server  -*- lexical-binding: t; -*-
+;;; musicbrainz.el --- MusicBrainz frontend over musicbrainz JSON-RPC server  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 
@@ -12,8 +12,8 @@
 
 ;;; Commentary:
 
-;; Emacs frontend for the `mb_bridge' MusicBrainz subprocess (see
-;; src/mb_bridge.cpp).  Transport is stdio JSON-RPC via built-in
+;; Emacs frontend for the `musicbrainz' MusicBrainz subprocess (see
+;; src/musicbrainz.cpp).  Transport is stdio JSON-RPC via built-in
 ;; `jsonrpc.el'; results render in `tabulated-list-mode' buffers
 ;; (elpaca-manager style) and per-entity detail buffers.
 ;;
@@ -22,8 +22,8 @@
 ;; built-in libraries: no vui, no dash.
 ;;
 ;; Quick start:
-;;   M-x mb-search           ; pick entity, enter query
-;;   M-x mb-lookup           ; pick entity, enter MBID
+;;   M-x musicbrainz-search           ; pick entity, enter query
+;;   M-x musicbrainz-lookup           ; pick entity, enter MBID
 ;; In results: RET opens detail, + loads more, g refreshes, q quits.
 ;; In detail: RET on an MBID button looks it up.
 
@@ -37,82 +37,82 @@
 
 ;;; Connection
 
-(defgroup mb-bridge nil
-  "MusicBrainz client backed by the mb_bridge subprocess."
+(defgroup musicbrainz nil
+  "MusicBrainz client backed by the musicbrainz subprocess."
   :group 'external
-  :prefix "mb-bridge-")
+  :prefix "musicbrainz-")
 
-(defcustom mb-bridge-program
-  (expand-file-name "build/mb_bridge"
+(defcustom musicbrainz-program
+  (expand-file-name "build/musicbrainz"
                     (file-name-directory (or load-file-name buffer-file-name)))
-  "Path to the mb_bridge server executable."
+  "Path to the musicbrainz server executable."
   :type 'file
-  :group 'mb-bridge)
+  :group 'musicbrainz)
 
-(defcustom mb-bridge-limit 10
+(defcustom musicbrainz-limit 10
   "Default number of results per search request."
   :type 'integer
-  :group 'mb-bridge)
+  :group 'musicbrainz)
 
-(defvar mb-bridge--connection nil
-  "Active `jsonrpc-process-connection' to mb_bridge, or nil.")
+(defvar musicbrainz--connection nil
+  "Active `jsonrpc-process-connection' to musicbrainz, or nil.")
 
-(defun mb-bridge-start ()
-  "Start the mb_bridge subprocess."
+(defun musicbrainz-start ()
+  "Start the musicbrainz subprocess."
   (interactive)
-  (when mb-bridge--connection
-    (mb-bridge-stop))
-  (unless (file-executable-p mb-bridge-program)
-    (error "mb_bridge not found or not executable: %s (build first)" mb-bridge-program))
-  (let ((proc (make-process :name "mb-bridge"
-                            :command (list mb-bridge-program)
+  (when musicbrainz--connection
+    (musicbrainz-stop))
+  (unless (file-executable-p musicbrainz-program)
+    (error "musicbrainz not found or not executable: %s (build first)" musicbrainz-program))
+  (let ((proc (make-process :name "musicbrainz"
+                            :command (list musicbrainz-program)
                             :coding 'binary
                             :connection-type 'pipe
                             :noquery t)))
     (set-process-query-on-exit-flag proc nil)
-    (setq mb-bridge--connection
+    (setq musicbrainz--connection
           (make-instance 'jsonrpc-process-connection
-                         :name "mb-bridge"
+                         :name "musicbrainz"
                          :process proc)))
-  (message "mb_bridge started"))
+  (message "musicbrainz started"))
 
-(defun mb-bridge-stop ()
-  "Stop the mb_bridge subprocess."
+(defun musicbrainz-stop ()
+  "Stop the musicbrainz subprocess."
   (interactive)
-  (when mb-bridge--connection
+  (when musicbrainz--connection
     (ignore-errors
-      (jsonrpc-notify mb-bridge--connection "exit" nil))
-    (setq mb-bridge--connection nil))
-  (message "mb_bridge stopped"))
+      (jsonrpc-notify musicbrainz--connection "exit" nil))
+    (setq musicbrainz--connection nil))
+  (message "musicbrainz stopped"))
 
-(defun mb-bridge--call (method params)
+(defun musicbrainz--call (method params)
   "Call METHOD on the bridge, starting it on demand."
-  (unless (and mb-bridge--connection
-               (jsonrpc-running-p mb-bridge--connection))
-    (mb-bridge-start))
-  (jsonrpc-request mb-bridge--connection method params))
+  (unless (and musicbrainz--connection
+               (jsonrpc-running-p musicbrainz--connection))
+    (musicbrainz-start))
+  (jsonrpc-request musicbrainz--connection method params))
 
 
 ;;; Small helpers (plist results: jsonrpc.el decodes to plists)
 
-(defun mb--false (v)
+(defun musicbrainz--false (v)
   "Normalize json `:json-false' to nil."
   (if (eq v :json-false) nil v))
 
-(defun mb--ms (ms)
+(defun musicbrainz--ms (ms)
   "Format milliseconds MS as m:ss."
   (if (numberp ms)
       (format "%d:%02d" (/ ms 60000) (/ (mod ms 60000) 1000))
     ""))
 
-(defun mb--credit-string (entity)
+(defun musicbrainz--credit-string (entity)
   "Render ENTITY's artist-credit as \"name+join...\" string."
   (mapconcat (lambda (c)
                (concat (or (plist-get c :name) "")
                        (or (plist-get c :joinphrase) "")))
              (plist-get entity :artist-credit) ""))
 
-(defun mb--entity-label (type)
+(defun musicbrainz--entity-label (type)
   "Human label for ENTITY-TYPE string."
   (alist-get type '(("artist" . "Artist")
                     ("release" . "Release")
@@ -137,7 +137,7 @@
 ;;; tuple and musicbrainz-api's per-entity overloads. All dispatch
 ;;; (search/lookup/browse/detail) goes through this table.
 
-(defvar mb--entities
+(defvar musicbrainz--entities
   ;; :links mirrors the C++ browse_links (BrowseXEntityParams in TS).
   '(("artist"       :search t :lookup t :browse t :list artists
       :links ("area" "collection" "recording" "release" "release-group" "work"))
@@ -173,16 +173,16 @@
 searchable/lookable/browsable per entity; :list is the search key;
 :links mirrors the C++ browse_links (TS BrowseXEntityParams).")
 
-(defun mb--entities-where (prop)
+(defun musicbrainz--entities-where (prop)
   (mapcar #'car (seq-filter (lambda (e) (plist-get (cdr e) prop))
-                            mb--entities)))
+                            musicbrainz--entities)))
 
-(defun mb--entity-prop (entity prop)
-  (plist-get (cdr (assoc entity mb--entities)) prop))
+(defun musicbrainz--entity-prop (entity prop)
+  (plist-get (cdr (assoc entity musicbrainz--entities)) prop))
 
 ;;; Per-entity summary lines (mirrors BrainzWrap format-*)
 
-(defun mb--format-artist (a)
+(defun musicbrainz--format-artist (a)
   (string-join
    (delq nil
          (list (plist-get a :name)
@@ -190,22 +190,22 @@ searchable/lookable/browsable per entity; :list is the search key;
                (when-let* ((cc (plist-get a :country))) (format "(%s)" cc))))
    " "))
 
-(defun mb--format-release (r)
+(defun musicbrainz--format-release (r)
   (format "%s%s%s%s"
           (or (plist-get r :title) "")
           (if-let* ((d (plist-get r :date))) (format " (%s)" d) "")
           (if-let* ((s (plist-get r :status))) (format " [%s]" s) "")
-          (let ((ac (mb--credit-string r)))
+          (let ((ac (musicbrainz--credit-string r)))
             (if (string-empty-p ac) "" (format " — %s" ac)))))
 
-(defun mb--format-recording (r)
+(defun musicbrainz--format-recording (r)
   (format "%s%s%s"
           (or (plist-get r :title) "")
-          (if-let* ((len (plist-get r :length))) (format " (%s)" (mb--ms len)) "")
-          (let ((ac (mb--credit-string r)))
+          (if-let* ((len (plist-get r :length))) (format " (%s)" (musicbrainz--ms len)) "")
+          (let ((ac (musicbrainz--credit-string r)))
             (if (string-empty-p ac) "" (format " — %s" ac)))))
 
-(defun mb--format-label (l)
+(defun musicbrainz--format-label (l)
   (string-join
    (delq nil
          (list (plist-get l :name)
@@ -213,13 +213,13 @@ searchable/lookable/browsable per entity; :list is the search key;
                (when-let* ((code (plist-get l :label-code))) (format "(LC %s)" code))))
    " "))
 
-(defun mb--format-release-group (g)
+(defun musicbrainz--format-release-group (g)
   (format "%s%s%s"
           (or (plist-get g :title) "")
           (if-let* ((d (plist-get g :first-release-date))) (format " (%s)" d) "")
           (if-let* ((p (plist-get g :primary-type))) (format " [%s]" p) "")))
 
-(defun mb--format-work (w)
+(defun musicbrainz--format-work (w)
   (string-join
    (delq nil
          (list (plist-get w :title)
@@ -227,14 +227,14 @@ searchable/lookable/browsable per entity; :list is the search key;
                (when-let* ((lang (plist-get w :language))) (format "(%s)" lang))))
    " "))
 
-(defun mb--format-area (a)
+(defun musicbrainz--format-area (a)
   (string-join
    (delq nil
          (list (plist-get a :name)
                (when-let* ((ty (plist-get a :type))) (format "[%s]" ty))))
    " "))
 
-(defun mb--format-place (p)
+(defun musicbrainz--format-place (p)
   (string-join
    (delq nil
          (list (plist-get p :name)
@@ -242,7 +242,7 @@ searchable/lookable/browsable per entity; :list is the search key;
                (when-let* ((ad (plist-get p :address))) (format "(%s)" ad))))
    " "))
 
-(defun mb--format-event (e)
+(defun musicbrainz--format-event (e)
   (string-join
    (delq nil
          (list (plist-get e :name)
@@ -250,33 +250,33 @@ searchable/lookable/browsable per entity; :list is the search key;
                (when-let* ((tm (plist-get e :time))) (format "(%s)" tm))))
    " "))
 
-(defun mb--format-series (s)
+(defun musicbrainz--format-series (s)
   (string-join
    (delq nil
          (list (plist-get s :name)
                (when-let* ((ty (plist-get s :type))) (format "[%s]" ty))))
    " "))
 
-(defun mb--format-instrument (i)
+(defun musicbrainz--format-instrument (i)
   (string-join
    (delq nil
          (list (plist-get i :name)
                (when-let* ((ty (plist-get i :type))) (format "[%s]" ty))))
    " "))
 
-(defun mb--format-collection (c)
+(defun musicbrainz--format-collection (c)
   (or (plist-get c :name) ""))
 
-(defun mb--format-url (u)
+(defun musicbrainz--format-url (u)
   (or (plist-get u :resource) (plist-get u :id) ""))
 
-(defun mb--format-annotation (a)
+(defun musicbrainz--format-annotation (a)
   (or (plist-get a :name) ""))
 
-(defun mb--format-tag (tag)
+(defun musicbrainz--format-tag (tag)
   (or (plist-get tag :name) ""))
 
-(defun mb--format-cdstub (c)
+(defun musicbrainz--format-cdstub (c)
   (format "%s%s"
           (or (plist-get c :title) "")
           (if-let* ((ar (plist-get c :artist))) (format " — %s" ar) "")))
@@ -284,194 +284,194 @@ searchable/lookable/browsable per entity; :list is the search key;
 
 ;;; Search results buffer (tabulated-list-mode, elpaca-manager style)
 
-(defvar-local mb--entity nil "Entity type string for this results buffer.")
-(defvar-local mb--query nil "Query string (search mode) for this buffer.")
-(defvar-local mb--linked nil "Linked entity type (browse mode).")
-(defvar-local mb--linked-id nil "Linked entity MBID (browse mode).")
-(defvar-local mb--mode nil "Either `search' or `browse'.")
-(defvar-local mb--limit nil)
-(defvar-local mb--offset nil)
-(defvar-local mb--count nil)
-(defvar-local mb--entries nil "Accumulated tabulated-list entries.")
+(defvar-local musicbrainz--entity nil "Entity type string for this results buffer.")
+(defvar-local musicbrainz--query nil "Query string (search mode) for this buffer.")
+(defvar-local musicbrainz--linked nil "Linked entity type (browse mode).")
+(defvar-local musicbrainz--linked-id nil "Linked entity MBID (browse mode).")
+(defvar-local musicbrainz--mode nil "Either `search' or `browse'.")
+(defvar-local musicbrainz--limit nil)
+(defvar-local musicbrainz--offset nil)
+(defvar-local musicbrainz--count nil)
+(defvar-local musicbrainz--entries nil "Accumulated tabulated-list entries.")
 
-(defvar mb-search-mode-map
+(defvar musicbrainz-search-mode-map
   (let ((m (make-sparse-keymap)))
     (set-keymap-parent m tabulated-list-mode-map)
-    (define-key m (kbd "RET") #'mb-show-at-point)
-    (define-key m (kbd "+") #'mb-search-more)
+    (define-key m (kbd "RET") #'musicbrainz-show-at-point)
+    (define-key m (kbd "+") #'musicbrainz-search-more)
     m)
-  "Keymap for `mb-search-mode'.")
+  "Keymap for `musicbrainz-search-mode'.")
 
-(define-derived-mode mb-search-mode tabulated-list-mode "MB-Search"
+(define-derived-mode musicbrainz-search-mode tabulated-list-mode "MB-Search"
   "Major mode for MusicBrainz search results."
-  :group 'mb-bridge
+  :group 'musicbrainz
   (setq tabulated-list-format [("Summary" 70 nil)
                                ("Info" 22 nil)
                                ("MBID" 36 nil)])
   (tabulated-list-init-header))
 
-(defun mb--entry-info (entity item)
+(defun musicbrainz--entry-info (entity item)
   "Secondary column text for ITEM of ENTITY."
   (pcase entity
     ("artist" (or (plist-get item :country) ""))
     ("release" (string-join (delq nil (list (plist-get item :date)
                                             (plist-get item :status)))
                             " "))
-    ("recording" (mb--ms (plist-get item :length)))
+    ("recording" (musicbrainz--ms (plist-get item :length)))
     ("label" (or (plist-get item :label-code) ""))
     ("release-group" (or (plist-get item :first-release-date) ""))
     (_ "")))
 
-(defun mb--entry-summary (entity item)
+(defun musicbrainz--entry-summary (entity item)
   (pcase entity
-    ("artist" (mb--format-artist item))
-    ("release" (mb--format-release item))
-    ("recording" (mb--format-recording item))
-    ("label" (mb--format-label item))
-    ("release-group" (mb--format-release-group item))
-    ("work" (mb--format-work item))
-    ("area" (mb--format-area item))
-    ("place" (mb--format-place item))
-    ("event" (mb--format-event item))
-    ("series" (mb--format-series item))
-    ("instrument" (mb--format-instrument item))
-    ("collection" (mb--format-collection item))
-    ("url" (mb--format-url item))
-    ("annotation" (mb--format-annotation item))
-    ("tag" (mb--format-tag item))
-    ("cdstub" (mb--format-cdstub item))
+    ("artist" (musicbrainz--format-artist item))
+    ("release" (musicbrainz--format-release item))
+    ("recording" (musicbrainz--format-recording item))
+    ("label" (musicbrainz--format-label item))
+    ("release-group" (musicbrainz--format-release-group item))
+    ("work" (musicbrainz--format-work item))
+    ("area" (musicbrainz--format-area item))
+    ("place" (musicbrainz--format-place item))
+    ("event" (musicbrainz--format-event item))
+    ("series" (musicbrainz--format-series item))
+    ("instrument" (musicbrainz--format-instrument item))
+    ("collection" (musicbrainz--format-collection item))
+    ("url" (musicbrainz--format-url item))
+    ("annotation" (musicbrainz--format-annotation item))
+    ("tag" (musicbrainz--format-tag item))
+    ("cdstub" (musicbrainz--format-cdstub item))
     (_ (or (plist-get item :title) (plist-get item :name) ""))))
 
-(defun mb--list-key (entity)
+(defun musicbrainz--list-key (entity)
   "Search-result list key for ENTITY (mirrors TS I*List shapes)."
-  (plist-get (cdr (assoc entity mb--entities)) :list))
+  (plist-get (cdr (assoc entity musicbrainz--entities)) :list))
 
-(defun mb--make-entries (entity items)
+(defun musicbrainz--make-entries (entity items)
   (mapcar (lambda (it)
             (list (or (plist-get it :id) "")
-                  (vector (mb--entry-summary entity it)
-                          (mb--entry-info entity it)
+                  (vector (musicbrainz--entry-summary entity it)
+                          (musicbrainz--entry-info entity it)
                           (or (plist-get it :id) ""))))
           items))
 
-(defun mb--refresh-header ()
+(defun musicbrainz--refresh-header ()
   (setq header-line-format
         (format " %s %s — %d of %s (RET detail, + more, g refresh, q quit)"
-                (mb--entity-label mb--entity)
-                (if (eq mb--mode 'browse)
-                    (format "by %s %s" mb--linked mb--linked-id)
-                  (format "\"%s\"" mb--query))
-                (length mb--entries)
-                (or mb--count "?"))))
+                (musicbrainz--entity-label musicbrainz--entity)
+                (if (eq musicbrainz--mode 'browse)
+                    (format "by %s %s" musicbrainz--linked musicbrainz--linked-id)
+                  (format "\"%s\"" musicbrainz--query))
+                (length musicbrainz--entries)
+                (or musicbrainz--count "?"))))
 
-(defun mb--run-search (entity query limit offset)
-  (mb-bridge--call (concat "search-" entity)
+(defun musicbrainz--run-search (entity query limit offset)
+  (musicbrainz--call (concat "search-" entity)
                    (list :query query :limit limit :offset offset)))
 
-(defun mb--run-browse (entity linked linked-id limit offset)
-  (mb-bridge--call (concat "browse-" entity)
+(defun musicbrainz--run-browse (entity linked linked-id limit offset)
+  (musicbrainz--call (concat "browse-" entity)
                    (list (intern (concat ":" linked)) linked-id
                          :limit limit :offset offset)))
 
-(defun mb--run-page (limit offset)
+(defun musicbrainz--run-page (limit offset)
   "Fetch one page for the current buffer (search or browse mode)."
-  (if (eq mb--mode 'browse)
-      (mb--run-browse mb--entity mb--linked mb--linked-id limit offset)
-    (mb--run-search mb--entity mb--query limit offset)))
+  (if (eq musicbrainz--mode 'browse)
+      (musicbrainz--run-browse musicbrainz--entity musicbrainz--linked musicbrainz--linked-id limit offset)
+    (musicbrainz--run-search musicbrainz--entity musicbrainz--query limit offset)))
 
-(defun mb--show-results-buffer (buf)
+(defun musicbrainz--show-results-buffer (buf)
   (with-current-buffer buf
-    (mb-search-mode)
-    (let* ((res (mb--run-page mb--limit mb--offset))
-           (items (seq-into (plist-get res (mb--list-key mb--entity)) 'list)))
-      (setq mb--count (plist-get res :count)
-            mb--entries (mb--make-entries mb--entity items)
-            tabulated-list-entries mb--entries)
+    (musicbrainz-search-mode)
+    (let* ((res (musicbrainz--run-page musicbrainz--limit musicbrainz--offset))
+           (items (seq-into (plist-get res (musicbrainz--list-key musicbrainz--entity)) 'list)))
+      (setq musicbrainz--count (plist-get res :count)
+            musicbrainz--entries (musicbrainz--make-entries musicbrainz--entity items)
+            tabulated-list-entries musicbrainz--entries)
       (tabulated-list-print t)
-      (mb--refresh-header)))
+      (musicbrainz--refresh-header)))
   (pop-to-buffer buf))
 
-(defun mb-search (entity query)
+(defun musicbrainz-search (entity query)
   "Search MusicBrainz ENTITY for QUERY, showing a results buffer."
   (interactive
-   (list (completing-read "Entity: " (mb--entities-where :search)
+   (list (completing-read "Entity: " (musicbrainz--entities-where :search)
                            nil t nil nil "artist")
          (read-string "Query (e.g. artist:radiohead): ")))
-  (let ((buf (get-buffer-create (format "*mb:%s:%s*" entity query))))
+  (let ((buf (get-buffer-create (format "*musicbrainz:%s:%s*" entity query))))
     (with-current-buffer buf
-      (setq mb--entity entity
-            mb--query query
-            mb--mode 'search
-            mb--limit mb-bridge-limit
-            mb--offset 0
-            mb--entries nil)
+      (setq musicbrainz--entity entity
+            musicbrainz--query query
+            musicbrainz--mode 'search
+            musicbrainz--limit musicbrainz-limit
+            musicbrainz--offset 0
+            musicbrainz--entries nil)
       (message "Searching %s for %S..." entity query))
-    (mb--show-results-buffer buf)))
+    (musicbrainz--show-results-buffer buf)))
 
-(defun mb-browse (entity linked linked-id)
+(defun musicbrainz-browse (entity linked linked-id)
   "Browse ENTITY linked to LINKED entity MBID LINKED-ID."
   (interactive
-   (let* ((en (completing-read "Browse entity: " (mb--entities-where :browse)
+   (let* ((en (completing-read "Browse entity: " (musicbrainz--entities-where :browse)
                                nil t nil nil "release"))
           (lk (completing-read "Linked by: "
-                               (mb--entity-prop en :links) nil t))
+                               (musicbrainz--entity-prop en :links) nil t))
           (id (read-string (format "%s MBID%s: " lk (if (equal lk "resource") " or URI" "")))))
      (list en lk id)))
-  (let ((buf (get-buffer-create (format "*mb:browse-%s:%s*" entity linked-id))))
+  (let ((buf (get-buffer-create (format "*musicbrainz:browse-%s:%s*" entity linked-id))))
     (with-current-buffer buf
-      (setq mb--entity entity
-            mb--linked linked
-            mb--linked-id linked-id
-            mb--mode 'browse
-            mb--limit mb-bridge-limit
-            mb--offset 0
-            mb--entries nil)
+      (setq musicbrainz--entity entity
+            musicbrainz--linked linked
+            musicbrainz--linked-id linked-id
+            musicbrainz--mode 'browse
+            musicbrainz--limit musicbrainz-limit
+            musicbrainz--offset 0
+            musicbrainz--entries nil)
       (message "Browsing %s by %s %s..." entity linked linked-id))
-    (mb--show-results-buffer buf)))
+    (musicbrainz--show-results-buffer buf)))
 
-(defun mb-search-more ()
+(defun musicbrainz-search-more ()
   "Load the next page of results into the current results buffer."
-  (interactive nil mb-search-mode)
-  (let ((next (+ mb--offset mb--limit)))
-    (when (and mb--count (>= next mb--count))
+  (interactive nil musicbrainz-search-mode)
+  (let ((next (+ musicbrainz--offset musicbrainz--limit)))
+    (when (and musicbrainz--count (>= next musicbrainz--count))
       (user-error "No more results"))
     (message "Loading more...")
-    (let* ((res (mb--run-page mb--limit next))
-           (items (seq-into (plist-get res (mb--list-key mb--entity)) 'list)))
-      (setq mb--offset next
-            mb--entries (append mb--entries
-                                (mb--make-entries mb--entity items))
-            tabulated-list-entries mb--entries)
+    (let* ((res (musicbrainz--run-page musicbrainz--limit next))
+           (items (seq-into (plist-get res (musicbrainz--list-key musicbrainz--entity)) 'list)))
+      (setq musicbrainz--offset next
+            musicbrainz--entries (append musicbrainz--entries
+                                (musicbrainz--make-entries musicbrainz--entity items))
+            tabulated-list-entries musicbrainz--entries)
       (tabulated-list-print t)
-      (mb--refresh-header))))
+      (musicbrainz--refresh-header))))
 
-(defun mb-show-at-point ()
+(defun musicbrainz-show-at-point ()
   "Open a detail buffer for the result on the current line."
-  (interactive nil mb-search-mode)
+  (interactive nil musicbrainz-search-mode)
   (let ((id (tabulated-list-get-id)))
     (unless (and id (not (string-empty-p id)))
       (user-error "No MBID on this line"))
-    (mb-lookup mb--entity id)))
+    (musicbrainz-lookup musicbrainz--entity id)))
 
 
 ;;; Detail buffers (special-mode, BrainzWrap section layout)
 
-(defvar mb-detail-mode-map
+(defvar musicbrainz-detail-mode-map
   (let ((m (make-sparse-keymap)))
     (set-keymap-parent m special-mode-map)
     m)
-  "Keymap for `mb-detail-mode'.")
+  "Keymap for `musicbrainz-detail-mode'.")
 
-(define-derived-mode mb-detail-mode special-mode "MB-Detail"
+(define-derived-mode musicbrainz-detail-mode special-mode "MB-Detail"
   "Major mode for a single MusicBrainz entity."
-  :group 'mb-bridge)
+  :group 'musicbrainz)
 
-(defun mb--meta (label value)
+(defun musicbrainz--meta (label value)
   (when (and value (not (equal value "")))
     (insert (propertize (format "%-14s " label) 'face 'bold)
             (format "%s\n" value))))
 
-(defun mb--aliases-section (entity)
+(defun musicbrainz--aliases-section (entity)
   "Render ENTITY's aliases list."
   (when-let* ((aliases (plist-get entity :aliases)))
     (let ((items (seq-into aliases 'list)))
@@ -487,14 +487,14 @@ searchable/lookable/browsable per entity; :list is the search key;
                               (format " (%s)" ty)
                             ""))))))))
 
-(defun mb--rating-string (entity)
+(defun musicbrainz--rating-string (entity)
   "Render ENTITY's rating as \"value (votes)\" or nil."
   (when-let* ((r (plist-get entity :rating)))
     (format "%s (%s votes)"
             (or (plist-get r :value) "?")
             (or (plist-get r :votes-count) "?"))))
 
-(defun mb--tags-section (entity)
+(defun musicbrainz--tags-section (entity)
   "Render ENTITY's tags list, mirroring BrainzWrap's tags section."
   (when-let* ((tags (plist-get entity :tags)))
     (let ((items (seq-into tags 'list)))
@@ -507,7 +507,7 @@ searchable/lookable/browsable per entity; :list is the search key;
                               (format " (%s)" c)
                             ""))))))))
 
-(defun mb--genres-section (entity)
+(defun musicbrainz--genres-section (entity)
   "Render ENTITY's genres list."
   (when-let* ((genres (plist-get entity :genres)))
     (let ((items (seq-into genres 'list)))
@@ -520,7 +520,7 @@ searchable/lookable/browsable per entity; :list is the search key;
                               (format " (%s)" c)
                             ""))))))))
 
-(defun mb--sameas-section (entity)
+(defun musicbrainz--sameas-section (entity)
   "Render ENTITY's sameAs external links as clickable buttons."
   (when-let* ((links (plist-get entity :sameAs)))
     (let ((items (seq-into links 'list)))
@@ -537,41 +537,41 @@ searchable/lookable/browsable per entity; :list is the search key;
                                   'help-echo url))
             (insert "\n")))))))
 
-(defun mb--mbid-button (label entity id)
+(defun musicbrainz--mbid-button (label entity id)
   "Insert LABEL text; RET on it looks up ENTITY/ID."
   (insert-text-button (or label id)
-                      'action (lambda (_) (mb-lookup entity id))
+                      'action (lambda (_) (musicbrainz-lookup entity id))
                       'follow-link t
                       'help-echo (format "%s %s" entity id))
   (insert "\n"))
 
-(defun mb--detail-artist (a)
-  (mb--meta "Type" (plist-get a :type))
-  (mb--meta "Country" (plist-get a :country))
-  (mb--meta "Sort Name" (plist-get a :sort-name))
-  (mb--meta "Disambiguation" (plist-get a :disambiguation))
-  (mb--meta "Rating" (mb--rating-string a))
+(defun musicbrainz--detail-artist (a)
+  (musicbrainz--meta "Type" (plist-get a :type))
+  (musicbrainz--meta "Country" (plist-get a :country))
+  (musicbrainz--meta "Sort Name" (plist-get a :sort-name))
+  (musicbrainz--meta "Disambiguation" (plist-get a :disambiguation))
+  (musicbrainz--meta "Rating" (musicbrainz--rating-string a))
   (when-let* ((ls (plist-get a :life-span)))
     (insert "\nLife Span\n")
-    (mb--meta "Begin" (plist-get ls :begin))
-    (mb--meta "End" (plist-get ls :end)))
-  (mb--aliases-section a)
-  (mb--tags-section a)
-  (mb--genres-section a)
-  (mb--sameas-section a))
+    (musicbrainz--meta "Begin" (plist-get ls :begin))
+    (musicbrainz--meta "End" (plist-get ls :end)))
+  (musicbrainz--aliases-section a)
+  (musicbrainz--tags-section a)
+  (musicbrainz--genres-section a)
+  (musicbrainz--sameas-section a))
 
-(defun mb--detail-release (r)
-  (mb--meta "Status" (plist-get r :status))
-  (mb--meta "Date" (plist-get r :date))
-  (mb--meta "Country" (plist-get r :country))
-  (mb--meta "Barcode" (plist-get r :barcode))
-  (mb--meta "ASIN" (plist-get r :asin))
-  (mb--meta "Quality" (plist-get r :quality))
-  (mb--meta "Packaging" (plist-get r :packaging))
+(defun musicbrainz--detail-release (r)
+  (musicbrainz--meta "Status" (plist-get r :status))
+  (musicbrainz--meta "Date" (plist-get r :date))
+  (musicbrainz--meta "Country" (plist-get r :country))
+  (musicbrainz--meta "Barcode" (plist-get r :barcode))
+  (musicbrainz--meta "ASIN" (plist-get r :asin))
+  (musicbrainz--meta "Quality" (plist-get r :quality))
+  (musicbrainz--meta "Packaging" (plist-get r :packaging))
   (when-let* ((tr (plist-get r :text-representation)))
-    (mb--meta "Text" (format "%s/%s" (plist-get tr :language) (plist-get tr :script))))
+    (musicbrainz--meta "Text" (format "%s/%s" (plist-get tr :language) (plist-get tr :script))))
   (when-let* ((ca (plist-get r :cover-art-archive)))
-    (mb--meta "CoverArt" (format "%s front=%s back=%s"
+    (musicbrainz--meta "CoverArt" (format "%s front=%s back=%s"
                                  (plist-get ca :count)
                                  (plist-get ca :front) (plist-get ca :back))))
   (when-let* ((evs (plist-get r :release-events)))
@@ -581,9 +581,9 @@ searchable/lookable/browsable per entity; :list is the search key;
                       (if-let* ((ar (plist-get ev :area)))
                           (format " (%s)" (plist-get ar :name))
                         "")))))
-  (mb--meta "Artists" (mb--credit-string r))
+  (musicbrainz--meta "Artists" (musicbrainz--credit-string r))
   (when-let* ((rg (plist-get r :release-group)))
-    (mb--meta "Group" (format "%s [%s]"
+    (musicbrainz--meta "Group" (format "%s [%s]"
                               (plist-get rg :title)
                               (plist-get rg :primary-type))))
   (when-let* ((labels (plist-get r :label-info)))
@@ -595,10 +595,10 @@ searchable/lookable/browsable per entity; :list is the search key;
                         (if-let* ((cat (plist-get l :catalog-number)))
                             (format " (%s)" cat)
                           ""))))))
-  (mb--aliases-section r)
-  (mb--tags-section r)
-  (mb--genres-section r)
-  (mb--sameas-section r)
+  (musicbrainz--aliases-section r)
+  (musicbrainz--tags-section r)
+  (musicbrainz--genres-section r)
+  (musicbrainz--sameas-section r)
   (when-let* ((media (plist-get r :media)))
     (seq-doseq (m (seq-into media 'list))
       (insert (format "\n[%s]\n" (or (plist-get m :format) "Medium")))
@@ -606,101 +606,101 @@ searchable/lookable/browsable per entity; :list is the search key;
         (insert (format "  %2s. %-40s %s  "
                         (or (plist-get tr :number) "")
                         (or (plist-get tr :title) "")
-                        (mb--ms (plist-get tr :length))))
+                        (musicbrainz--ms (plist-get tr :length))))
         (when-let* ((rid (plist-get (plist-get tr :recording) :id)))
-          (mb--mbid-button rid "recording" rid))))))
+          (musicbrainz--mbid-button rid "recording" rid))))))
 
-(defun mb--detail-recording (r)
-  (mb--meta "Length" (mb--ms (plist-get r :length)))
-  (mb--meta "Video" (if (mb--false (plist-get r :video)) "yes" "no"))
-  (mb--meta "Rating" (mb--rating-string r))
-  (mb--meta "Artists" (mb--credit-string r))
+(defun musicbrainz--detail-recording (r)
+  (musicbrainz--meta "Length" (musicbrainz--ms (plist-get r :length)))
+  (musicbrainz--meta "Video" (if (musicbrainz--false (plist-get r :video)) "yes" "no"))
+  (musicbrainz--meta "Rating" (musicbrainz--rating-string r))
+  (musicbrainz--meta "Artists" (musicbrainz--credit-string r))
   (when-let* ((isrcs (plist-get r :isrcs)))
-    (mb--meta "ISRCs" (string-join (seq-into isrcs 'list) ", ")))
-  (mb--aliases-section r)
-  (mb--tags-section r)
-  (mb--genres-section r)
-  (mb--sameas-section r)
+    (musicbrainz--meta "ISRCs" (string-join (seq-into isrcs 'list) ", ")))
+  (musicbrainz--aliases-section r)
+  (musicbrainz--tags-section r)
+  (musicbrainz--genres-section r)
+  (musicbrainz--sameas-section r)
   (when-let* ((rels (plist-get r :releases)))
     (insert (format "\nReleases (%d)\n" (seq-length rels)))
     (seq-doseq (rel (seq-into rels 'list))
-      (mb--mbid-button (plist-get rel :title) "release"
+      (musicbrainz--mbid-button (plist-get rel :title) "release"
                        (plist-get rel :id)))))
 
-(defun mb--detail-disc (d)
-  (mb--meta "Sectors" (number-to-string (or (plist-get d :sectors) 0)))
+(defun musicbrainz--detail-disc (d)
+  (musicbrainz--meta "Sectors" (number-to-string (or (plist-get d :sectors) 0)))
   (when-let* ((rels (plist-get d :releases)))
     (insert (format "\nReleases (%d)\n" (seq-length rels)))
     (seq-doseq (rel (seq-into rels 'list))
-      (mb--mbid-button (plist-get rel :title) "release"
+      (musicbrainz--mbid-button (plist-get rel :title) "release"
                        (plist-get rel :id)))))
 
-(defun mb--detail-label (l)
-  (mb--meta "Type" (plist-get l :type))
-  (mb--meta "Country" (plist-get l :country))
-  (mb--meta "Sort Name" (plist-get l :sort-name))
-  (mb--meta "Label Code" (plist-get l :label-code))
-  (mb--meta "Disambiguation" (plist-get l :disambiguation))
-  (mb--meta "Rating" (mb--rating-string l))
+(defun musicbrainz--detail-label (l)
+  (musicbrainz--meta "Type" (plist-get l :type))
+  (musicbrainz--meta "Country" (plist-get l :country))
+  (musicbrainz--meta "Sort Name" (plist-get l :sort-name))
+  (musicbrainz--meta "Label Code" (plist-get l :label-code))
+  (musicbrainz--meta "Disambiguation" (plist-get l :disambiguation))
+  (musicbrainz--meta "Rating" (musicbrainz--rating-string l))
   (when-let* ((ar (plist-get l :area)))
-    (mb--meta "Area" (plist-get ar :name)))
+    (musicbrainz--meta "Area" (plist-get ar :name)))
   (when-let* ((ipis (plist-get l :ipis)))
-    (mb--meta "IPIs" (string-join (seq-into ipis 'list) ", ")))
+    (musicbrainz--meta "IPIs" (string-join (seq-into ipis 'list) ", ")))
   (when-let* ((isnis (plist-get l :isnis)))
-    (mb--meta "ISNIs" (string-join (seq-into isnis 'list) ", ")))
+    (musicbrainz--meta "ISNIs" (string-join (seq-into isnis 'list) ", ")))
   (when-let* ((ls (plist-get l :life-span)))
     (insert "\nLife Span\n")
-    (mb--meta "Begin" (plist-get ls :begin))
-    (mb--meta "End" (plist-get ls :end)))
-  (mb--aliases-section l)
-  (mb--tags-section l)
-  (mb--genres-section l)
-  (mb--sameas-section l))
+    (musicbrainz--meta "Begin" (plist-get ls :begin))
+    (musicbrainz--meta "End" (plist-get ls :end)))
+  (musicbrainz--aliases-section l)
+  (musicbrainz--tags-section l)
+  (musicbrainz--genres-section l)
+  (musicbrainz--sameas-section l))
 
-(defun mb--detail-release-group (g)
-  (mb--meta "Type" (plist-get g :type))
-  (mb--meta "Disambiguation" (plist-get g :disambiguation))
-  (mb--meta "First Date" (plist-get g :first-release-date))
-  (mb--meta "Primary" (plist-get g :primary-type))
+(defun musicbrainz--detail-release-group (g)
+  (musicbrainz--meta "Type" (plist-get g :type))
+  (musicbrainz--meta "Disambiguation" (plist-get g :disambiguation))
+  (musicbrainz--meta "First Date" (plist-get g :first-release-date))
+  (musicbrainz--meta "Primary" (plist-get g :primary-type))
   (when-let* ((st (plist-get g :secondary-types)))
-    (mb--meta "Secondary" (string-join (seq-into st 'list) ", ")))
-  (mb--meta "Artists" (mb--credit-string g))
-  (mb--meta "Rating" (mb--rating-string g))
+    (musicbrainz--meta "Secondary" (string-join (seq-into st 'list) ", ")))
+  (musicbrainz--meta "Artists" (musicbrainz--credit-string g))
+  (musicbrainz--meta "Rating" (musicbrainz--rating-string g))
   (when-let* ((rels (plist-get g :releases)))
     (insert (format "\nReleases (%d)\n" (seq-length rels)))
     (seq-doseq (rel (seq-into rels 'list))
-      (mb--mbid-button (plist-get rel :title) "release"
+      (musicbrainz--mbid-button (plist-get rel :title) "release"
                        (plist-get rel :id))))
-  (mb--aliases-section g)
-  (mb--tags-section g)
-  (mb--genres-section g)
-  (mb--sameas-section g))
+  (musicbrainz--aliases-section g)
+  (musicbrainz--tags-section g)
+  (musicbrainz--genres-section g)
+  (musicbrainz--sameas-section g))
 
-(defun mb--detail-work (w)
-  (mb--meta "Type" (plist-get w :type))
-  (mb--meta "Disambiguation" (plist-get w :disambiguation))
-  (mb--meta "Language" (plist-get w :language))
+(defun musicbrainz--detail-work (w)
+  (musicbrainz--meta "Type" (plist-get w :type))
+  (musicbrainz--meta "Disambiguation" (plist-get w :disambiguation))
+  (musicbrainz--meta "Language" (plist-get w :language))
   (when-let* ((langs (plist-get w :languages)))
-    (mb--meta "Languages" (string-join (seq-into langs 'list) ", ")))
+    (musicbrainz--meta "Languages" (string-join (seq-into langs 'list) ", ")))
   (when-let* ((iswcs (plist-get w :iswcs)))
-    (mb--meta "ISWCs" (string-join (seq-into iswcs 'list) ", ")))
-  (mb--meta "Rating" (mb--rating-string w))
-  (mb--aliases-section w)
+    (musicbrainz--meta "ISWCs" (string-join (seq-into iswcs 'list) ", ")))
+  (musicbrainz--meta "Rating" (musicbrainz--rating-string w))
+  (musicbrainz--aliases-section w)
   (when-let* ((attrs (plist-get w :attributes)))
     (insert (format "\nAttributes (%d)\n" (seq-length attrs)))
     (seq-doseq (a (seq-into attrs 'list))
       (insert (format "- %s: %s\n"
                       (or (plist-get a :type) "")
                       (or (plist-get a :value) "")))))
-  (mb--tags-section w)
-  (mb--genres-section w)
-  (mb--sameas-section w))
+  (musicbrainz--tags-section w)
+  (musicbrainz--genres-section w)
+  (musicbrainz--sameas-section w))
 
-(defun mb--detail-generic (e)
+(defun musicbrainz--detail-generic (e)
   "Fallback renderer: print scalar fields, then shared sections.
 Covers area/place/event/series/instrument/collection/url and any
 future entity without a dedicated renderer."
-  (mb--meta "Rating" (mb--rating-string e))
+  (musicbrainz--meta "Rating" (musicbrainz--rating-string e))
   (dolist (kv '((:name . "Name") (:title . "Title") (:type . "Type")
                 (:disambiguation . "Disambiguation")
                 (:sort-name . "Sort Name") (:country . "Country")
@@ -713,48 +713,48 @@ future entity without a dedicated renderer."
                 (:artist . "Artist") (:label-code . "Label Code")))
     (let ((v (plist-get e (car kv))))
       (when (and v (not (equal v "")) (atom v))
-        (mb--meta (cdr kv) (format "%s" v)))))
-  (mb--aliases-section e)
+        (musicbrainz--meta (cdr kv) (format "%s" v)))))
+  (musicbrainz--aliases-section e)
   (when-let* ((ls (plist-get e :life-span)))
     (insert "\nLife Span\n")
-    (mb--meta "Begin" (plist-get ls :begin))
-    (mb--meta "End" (plist-get ls :end)))
+    (musicbrainz--meta "Begin" (plist-get ls :begin))
+    (musicbrainz--meta "End" (plist-get ls :end)))
   (when-let* ((iso (plist-get e :iso-3166-1-codes)))
-    (mb--meta "ISO" (string-join (seq-into iso 'list) ", ")))
+    (musicbrainz--meta "ISO" (string-join (seq-into iso 'list) ", ")))
   (when-let* ((co (plist-get e :coordinates)))
-    (mb--meta "Coords" (format "%s, %s" (plist-get co :latitude)
+    (musicbrainz--meta "Coords" (format "%s, %s" (plist-get co :latitude)
                                (plist-get co :longitude))))
-  (mb--tags-section e)
-  (mb--genres-section e)
-  (mb--sameas-section e))
+  (musicbrainz--tags-section e)
+  (musicbrainz--genres-section e)
+  (musicbrainz--sameas-section e))
 
-(defun mb-lookup (entity mbid)
+(defun musicbrainz-lookup (entity mbid)
   "Show a detail buffer for ENTITY MBID."
   (interactive
-   (list (completing-read "Entity: " (mb--entities-where :lookup)
+   (list (completing-read "Entity: " (musicbrainz--entities-where :lookup)
                            nil t nil nil "artist")
          (read-string "MBID: ")))
   (message "Looking up %s %s..." entity mbid)
-  (let* ((res (mb-bridge--call (concat "lookup-" entity)
+  (let* ((res (musicbrainz--call (concat "lookup-" entity)
                                (list :id mbid)))
-         (buf (get-buffer-create (format "*mb:%s:%s*" entity mbid))))
+         (buf (get-buffer-create (format "*musicbrainz:%s:%s*" entity mbid))))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (propertize (format "%s %s\n\n" (mb--entity-label entity) mbid)
+        (insert (propertize (format "%s %s\n\n" (musicbrainz--entity-label entity) mbid)
                             'face 'bold))
         (pcase entity
-          ("artist" (mb--detail-artist res))
-          ("release" (mb--detail-release res))
-          ("recording" (mb--detail-recording res))
-          ("discid" (mb--detail-disc res))
-          ("label" (mb--detail-label res))
-          ("release-group" (mb--detail-release-group res))
-          ("work" (mb--detail-work res))
-          (_ (mb--detail-generic res)))
-        (mb-detail-mode)
+          ("artist" (musicbrainz--detail-artist res))
+          ("release" (musicbrainz--detail-release res))
+          ("recording" (musicbrainz--detail-recording res))
+          ("discid" (musicbrainz--detail-disc res))
+          ("label" (musicbrainz--detail-label res))
+          ("release-group" (musicbrainz--detail-release-group res))
+          ("work" (musicbrainz--detail-work res))
+          (_ (musicbrainz--detail-generic res)))
+        (musicbrainz-detail-mode)
         (goto-char (point-min))))
     (pop-to-buffer buf)))
 
-(provide 'mb_bridge)
-;;; mb_bridge.el ends here
+(provide 'musicbrainz)
+;;; musicbrainz.el ends here

@@ -1,4 +1,4 @@
-// mb_bridge — MusicBrainz WS2 (fmt=json) <-> Emacs JSON-RPC bridge.
+// musicbrainz — MusicBrainz WS2 (fmt=json) <-> Emacs JSON-RPC bridge.
 //
 // Thorough type-as-value design: every entity is a tag type carrying
 // endpoint / list-key / default-inc / from / to_json. Method names,
@@ -32,7 +32,7 @@ using json = nlohmann::json;
 // ---------------------------------------------------------------------------
 // URL helpers (logic merged from libmusicbrainz5 Query.cc)
 // ---------------------------------------------------------------------------
-namespace mb {
+namespace musicbrainz {
 
 static std::string uesc(const std::string& s) {
     std::ostringstream o;
@@ -118,7 +118,7 @@ struct CurlPipe {
     }
 };
 
-static std::string mb_get(const std::string& path) {
+static std::string fetch(const std::string& path) {
     {
         std::lock_guard<std::mutex> l(rl_mtx);
         auto n = std::chrono::steady_clock::now();
@@ -129,7 +129,7 @@ static std::string mb_get(const std::string& path) {
     }
     const std::string url = std::string("https://musicbrainz.org") + path;
     const std::string cmd =
-        "curl -s -H 'User-Agent: mb-emacs-bridge/1.0' '" + url + "'";
+        "curl -s -H 'User-Agent: Emacs-musicbrainz/0.1.0 (emacs-stdio-jsonrpc)' '" + url + "'";
     CurlPipe p(cmd);
     return p.read_all();
 }
@@ -1595,7 +1595,7 @@ json do_search(const json& p) {
         pm["inc"] = inc;
     }
     json raw = json::parse(
-        mb_get(bpath(std::string(E::endpoint), "", "", pm)));
+        fetch(bpath(std::string(E::endpoint), "", "", pm)));
     json result = {{"count", as_int(raw, "count")},
                    {"offset", as_int(raw, "offset")}};
     json arr = json::array();
@@ -1623,7 +1623,7 @@ json do_lookup(const json& p) {
         pm["inc"] = inc;
     }
     json raw = json::parse(
-        mb_get(bpath(std::string(E::endpoint), get_str(p, "id"), "", pm)));
+        fetch(bpath(std::string(E::endpoint), get_str(p, "id"), "", pm)));
     return E::from(raw).to_json();
 }
 
@@ -1661,7 +1661,7 @@ json do_browse(const json& p) {
         pm["inc"] = inc;
     }
     (void)linked;
-    json raw = json::parse(mb_get(bpath(std::string(E::endpoint), "", "", pm)));
+    json raw = json::parse(fetch(bpath(std::string(E::endpoint), "", "", pm)));
     const std::string ep(E::endpoint), bk(E::browse_key);
     json result = {{ep + "-count", as_int(raw, (ep + "-count").c_str())},
                    {ep + "-offset", as_int(raw, (ep + "-offset").c_str())}};
@@ -1697,11 +1697,11 @@ void register_all_entities(jsonrpc::Conn& s) {
     register_all(s, tag);
 }
 
-} // namespace mb
+} // namespace musicbrainz
 
 namespace {
 std::atomic<bool> gq{false};
-mb::PipeFds* g_pipe = nullptr; // set in main; signal handler only writes
+musicbrainz::PipeFds* g_pipe = nullptr; // set in main; signal handler only writes
 } // namespace
 
 static void sh(int) {
@@ -1710,7 +1710,7 @@ static void sh(int) {
 }
 
 int main() {
-    mb::PipeFds pipe;
+    musicbrainz::PipeFds pipe;
     g_pipe = &pipe;
     std::signal(SIGINT, sh);
     std::signal(SIGTERM, sh);
@@ -1725,12 +1725,12 @@ int main() {
 
     // Raw passthrough: {"entity","id","resource","params":{...}} -> MB JSON.
     s.register_method("query", [](const jsonrpc::json& p) -> jsonrpc::json {
-        const std::string en = mb::get_str(p, "entity");
-        const std::string id = mb::get_str(p, "id");
+        const std::string en = musicbrainz::get_str(p, "entity");
+        const std::string id = musicbrainz::get_str(p, "id");
         std::string rs;
         if (auto it = p.find("resource"); it != p.end() && !it->is_null())
             rs = it->get<std::string>();
-        mb::PMap pm;
+        musicbrainz::PMap pm;
         if (auto it = p.find("params");
             it != p.end() && it->is_object())
             for (auto& [k, v] : it->items()) {
@@ -1739,10 +1739,10 @@ int main() {
                         jsonrpc::spec::kInvalidParams, "params must be strings");
                 pm[k] = v.get<std::string>();
             }
-        return jsonrpc::json::parse(mb::mb_get(mb::bpath(en, id, rs, pm)));
+        return jsonrpc::json::parse(musicbrainz::fetch(musicbrainz::bpath(en, id, rs, pm)));
     });
 
-    mb::register_all_entities(s);
+    musicbrainz::register_all_entities(s);
 
     s.start();
     struct pollfd f[2] = {{pipe.r, POLLIN, 0}, {STDIN_FILENO, POLLIN, 0}};
