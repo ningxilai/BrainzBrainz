@@ -164,7 +164,28 @@
               (log-ok "label area + work attributes")
             (log-fail (format "gap fields missing: %S / %S" res wres))))
 
-        ;; Test 13: detail renderer runs headless
+        ;; Test 13: gap-fill fields round-trip
+        (let* ((res (mb-bridge--call "lookup-artist"
+                                     '(:id "a74b1b7f-71a5-4011-9441-d0b5e4122711")))
+               (rres (mb-bridge--call "lookup-release"
+                                      '(:id "4b3d18cc-8937-36f4-8de0-481088be58e6"))))
+          (if (and (> (seq-length (plist-get res :aliases)) 0)
+                   (plist-get res :rating)
+                   (plist-get (plist-get res :area) :name)
+                   (plist-get rres :packaging)
+                   (plist-get rres :cover-art-archive)
+                   (plist-get rres :release-events))
+              (log-ok "aliases/rating/area/release extras")
+            (log-fail "gap fields missing")))
+        (with-temp-buffer
+          (mb--detail-artist '(:type "Person" :aliases [(:name "X" :locale "en")]
+                               :rating (:value 4.5 :votes-count 80)))
+          (if (and (string-match-p "Aliases (1)" (buffer-string))
+                   (string-match-p "4.5 (80 votes)" (buffer-string)))
+              (log-ok "aliases/rating render")
+            (log-fail "aliases/rating render missing")))
+
+        ;; Test 14: detail renderer runs headless
         (with-temp-buffer
           (mb--detail-artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
                                :disambiguation "" :life-span (:begin "1926" :end "1991")))

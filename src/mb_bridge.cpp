@@ -293,6 +293,55 @@ static json sameas_json(const std::vector<SameAs>& v) {
     return a;
 }
 
+struct Alias {
+    std::string locale, name, sort_name, type;
+    // Mirrors WS2 "aliases" entries.
+    static Alias from(const json& j) {
+        return {sstr(j, "locale"), sstr(j, "name"), sstr(j, "sort-name"),
+                sstr(j, "type")};
+    }
+    json to_json() const {
+        return {{"locale", locale},
+                {"name", name},
+                {"sort-name", sort_name},
+                {"type", type}};
+    }
+};
+
+static std::vector<Alias> parse_aliases(const json& j) {
+    std::vector<Alias> v;
+    if (j.contains("aliases") && j["aliases"].is_array())
+        for (const auto& a : j["aliases"]) v.push_back(Alias::from(a));
+    return v;
+}
+
+static json aliases_json(const std::vector<Alias>& v) {
+    json a = json::array();
+    for (const auto& x : v) a.push_back(x.to_json());
+    return a;
+}
+
+struct Rating {
+    bool present = false;
+    double value = 0;
+    int votes = 0;
+    // Mirrors IRating {value, votes-count}; value may be null.
+    static Rating from(const json& j) {
+        Rating r;
+        if (j.contains("rating") && j["rating"].is_object()) {
+            const auto& x = j["rating"];
+            auto it = x.find("value");
+            if (it != x.end() && !it->is_null() && it->is_number()) {
+                r.present = true;
+                r.value = it->get<double>();
+            }
+            r.votes = as_int(x, "votes-count");
+            if (r.votes > 0) r.present = true;
+        }
+        return r;
+    }
+};
+
 struct Artist {
     static constexpr std::string_view endpoint = "artist";
     static constexpr std::string_view list_key = "artists";
@@ -315,12 +364,22 @@ struct Artist {
         "releases",        "release-groups", "works"};
 
     std::string id, type, name, sort_name, gender, country, disambiguation;
-    std::string begin, end;
+    std::string begin, end, area_id, area_name, begin_area_id, begin_area_name;
+    std::string end_area_id, end_area_name;
     bool ended = false;
+    Rating rating;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
 
+    static void area_ref(const json& j, const char* key, std::string& id,
+                         std::string& name) {
+        if (j.contains(key) && j[key].is_object()) {
+            id = sstr(j[key], "id");
+            name = sstr(j[key], "name");
+        }
+    }
     static Artist from(const json& j) {
         Artist a;
         a.id = sstr(j, "id");
@@ -335,12 +394,17 @@ struct Artist {
             a.end = sstr(j["life-span"], "end");
             a.ended = sbool(j["life-span"], "ended");
         }
+        area_ref(j, "area", a.area_id, a.area_name);
+        area_ref(j, "begin-area", a.begin_area_id, a.begin_area_name);
+        area_ref(j, "end-area", a.end_area_id, a.end_area_name);
+        a.rating = Rating::from(j);
+        a.aliases = parse_aliases(j);
         a.tags = parse_tags(j);
         a.genres = parse_genres(j);
         a.same_as = parse_sameas(j);
         return a;
     }
-    // Keys mirror IArtist: sort-name, life-span{begin,end,ended}.
+    // Keys mirror IArtist (+area/begin-area/end-area light refs).
     json to_json() const {
         json o = {{"id", id},
                   {"name", name},
@@ -351,6 +415,14 @@ struct Artist {
                   {"disambiguation", disambiguation}};
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        if (!area_id.empty()) o["area"] = {{"id", area_id}, {"name", area_name}};
+        if (!begin_area_id.empty())
+            o["begin-area"] = {{"id", begin_area_id}, {"name", begin_area_name}};
+        if (!end_area_id.empty())
+            o["end-area"] = {{"id", end_area_id}, {"name", end_area_name}};
+        if (rating.present)
+            o["rating"] = {{"value", rating.value}, {"votes-count", rating.votes}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -391,6 +463,8 @@ struct Medium {
     int position = 0, track_count = 0;
     std::string format, title;
     std::vector<Track> tracks;
+    std::vector<std::string> disc_ids;
+    std::vector<int> disc_sectors;
     static Medium from(const json& j) {
         Medium m;
         m.position = as_int(j, "position");
@@ -401,9 +475,14 @@ struct Medium {
         if (pit == j.end()) pit = j.find("track-list");
         if (pit != j.end() && pit->is_array())
             for (const auto& t : *pit) m.tracks.push_back(Track::from(t));
+        if (j.contains("discs") && j["discs"].is_array())
+            for (const auto& d : j["discs"]) {
+                m.disc_ids.push_back(sstr(d, "id"));
+                m.disc_sectors.push_back(as_int(d, "sectors"));
+            }
         return m;
     }
-    // Keys mirror IMedium: title, track-count.
+    // Keys mirror IMedium (+discs light refs for discid matching).
     json to_json() const {
         json o = {{"position", position},
                   {"format", format},
@@ -412,6 +491,11 @@ struct Medium {
         json ta = json::array();
         for (const auto& t : tracks) ta.push_back(t.to_json());
         o["tracks"] = std::move(ta);
+        json da = json::array();
+        for (size_t i = 0; i < disc_ids.size(); ++i)
+            da.push_back({{"id", disc_ids[i]},
+                          {"sectors", i < disc_sectors.size() ? disc_sectors[i] : 0}});
+        o["discs"] = std::move(da);
         return o;
     }
 };
@@ -462,10 +546,19 @@ struct Release {
         "collections",     "labels",       "recordings",
         "release-groups",  "recording-level-rels"};
 
-    std::string id, title, status, date, country, barcode, disambiguation;
+    std::string id, title, status, quality, packaging, date, country, barcode, asin;
+    std::string disambiguation, text_lang, text_script;
     std::string rg_id, rg_title, rg_primary;
+    bool cover_front = false, cover_back = false, cover_artwork = false, cover_darkened = false;
+    int cover_count = 0;
+    bool has_cover = false;
+    struct RelEvent {
+        std::string date, area_id, area_name;
+    };
     std::vector<NameCredit> credit;
     std::vector<Medium> media;
+    std::vector<RelEvent> events;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -475,10 +568,37 @@ struct Release {
         r.id = sstr(j, "id");
         r.title = sstr(j, "title");
         r.status = sstr(j, "status");
+        r.quality = sstr(j, "quality");
+        r.packaging = sstr(j, "packaging");
         r.date = sstr(j, "date");
         r.country = sstr(j, "country");
         r.barcode = sstr(j, "barcode");
+        r.asin = sstr(j, "asin");
         r.disambiguation = sstr(j, "disambiguation");
+        if (j.contains("text-representation") && j["text-representation"].is_object()) {
+            r.text_lang = sstr(j["text-representation"], "language");
+            r.text_script = sstr(j["text-representation"], "script");
+        }
+        if (j.contains("cover-art-archive") && j["cover-art-archive"].is_object()) {
+            const auto& c = j["cover-art-archive"];
+            r.cover_count = as_int(c, "count");
+            r.cover_front = sbool(c, "front");
+            r.cover_back = sbool(c, "back");
+            r.cover_artwork = sbool(c, "artwork");
+            r.cover_darkened = sbool(c, "darkened");
+            r.has_cover = true;
+        }
+        if (j.contains("release-events") && j["release-events"].is_array())
+            for (const auto& e : j["release-events"]) {
+                RelEvent ev;
+                ev.date = sstr(e, "date");
+                if (e.contains("area") && e["area"].is_object()) {
+                    ev.area_id = sstr(e["area"], "id");
+                    ev.area_name = sstr(e["area"], "name");
+                }
+                r.events.push_back(ev);
+            }
+        r.aliases = parse_aliases(j);
         if (j.contains("artist-credit") && j["artist-credit"].is_array())
             for (const auto& n : j["artist-credit"])
                 r.credit.push_back(NameCredit::from(n));
@@ -498,16 +618,33 @@ struct Release {
         r.same_as = parse_sameas(j);
         return r;
     }
-    // Keys mirror IRelease: artist-credit, release-group{primary-type},
-    // label-info[{catalog-number, label}].
+    // Keys mirror IRelease (+text-representation/packaging/quality/asin/
+    // cover-art-archive/release-events per WS2 shape).
     json to_json() const {
         json o = {{"id", id},
                   {"title", title},
                   {"status", status},
+                  {"quality", quality},
+                  {"packaging", packaging},
                   {"date", date},
                   {"country", country},
                   {"barcode", barcode},
-                  {"disambiguation", disambiguation}};
+                  {"asin", asin},
+                  {"disambiguation", disambiguation},
+                  {"text-representation",
+                   {{"language", text_lang}, {"script", text_script}}}};
+        if (has_cover)
+            o["cover-art-archive"] = {{"count", cover_count},
+                                      {"front", cover_front},
+                                      {"back", cover_back},
+                                      {"artwork", cover_artwork},
+                                      {"darkened", cover_darkened}};
+        json ea = json::array();
+        for (const auto& e : events)
+            ea.push_back({{"date", e.date},
+                          {"area", {{"id", e.area_id}, {"name", e.area_name}}}});
+        o["release-events"] = std::move(ea);
+        o["aliases"] = aliases_json(aliases);
         json ca = json::array();
         for (const auto& n : credit) ca.push_back(n.to_json());
         o["artist-credit"] = std::move(ca);
@@ -554,8 +691,10 @@ struct Recording {
     std::string id, title, disambiguation, first_release_date;
     long long length = 0;
     bool video = false;
+    Rating rating;
     std::vector<NameCredit> credit;
     std::vector<std::string> release_ids, release_titles, isrcs;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -578,6 +717,8 @@ struct Recording {
         if (j.contains("isrcs") && j["isrcs"].is_array())
             for (const auto& s : j["isrcs"])
                 if (s.is_string()) r.isrcs.push_back(s.get<std::string>());
+        r.rating = Rating::from(j);
+        r.aliases = parse_aliases(j);
         r.tags = parse_tags(j);
         r.genres = parse_genres(j);
         r.same_as = parse_sameas(j);
@@ -600,6 +741,9 @@ struct Recording {
                           {"title", i < release_titles.size() ? release_titles[i] : ""}});
         o["releases"] = std::move(ra);
         o["isrcs"] = isrcs;
+        if (rating.present)
+            o["rating"] = {{"value", rating.value}, {"votes-count", rating.votes}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -677,6 +821,8 @@ struct Label {
     std::string begin, end, area_id, area_name;
     bool ended = false;
     std::vector<std::string> ipis, isnis;
+    Rating rating;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -704,6 +850,8 @@ struct Label {
         if (j.contains("isnis") && j["isnis"].is_array())
             for (const auto& s : j["isnis"])
                 if (s.is_string()) l.isnis.push_back(s.get<std::string>());
+        l.rating = Rating::from(j);
+        l.aliases = parse_aliases(j);
         l.tags = parse_tags(j);
         l.genres = parse_genres(j);
         l.same_as = parse_sameas(j);
@@ -723,6 +871,9 @@ struct Label {
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
         if (!area_id.empty()) o["area"] = {{"id", area_id}, {"name", area_name}};
+        if (rating.present)
+            o["rating"] = {{"value", rating.value}, {"votes-count", rating.votes}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -754,6 +905,8 @@ struct ReleaseGroup {
     std::vector<std::string> secondary_types;
     std::vector<NameCredit> credit;
     std::vector<std::string> release_ids, release_titles;
+    Rating rating;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -776,6 +929,8 @@ struct ReleaseGroup {
                 g.release_ids.push_back(sstr(rel, "id"));
                 g.release_titles.push_back(sstr(rel, "title"));
             }
+        g.rating = Rating::from(j);
+        g.aliases = parse_aliases(j);
         g.tags = parse_tags(j);
         g.genres = parse_genres(j);
         g.same_as = parse_sameas(j);
@@ -798,6 +953,9 @@ struct ReleaseGroup {
             ra.push_back({{"id", release_ids[i]},
                           {"title", i < release_titles.size() ? release_titles[i] : ""}});
         o["releases"] = std::move(ra);
+        if (rating.present)
+            o["rating"] = {{"value", rating.value}, {"votes-count", rating.votes}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -830,6 +988,8 @@ struct Work {
     std::string id, type, title, disambiguation, language;
     std::vector<std::string> languages, iswcs;
     std::vector<Attribute> attributes;
+    Rating rating;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -849,6 +1009,8 @@ struct Work {
         if (j.contains("attributes") && j["attributes"].is_array())
             for (const auto& a : j["attributes"])
                 w.attributes.push_back({sstr(a, "type"), sstr(a, "value")});
+        w.rating = Rating::from(j);
+        w.aliases = parse_aliases(j);
         w.tags = parse_tags(j);
         w.genres = parse_genres(j);
         w.same_as = parse_sameas(j);
@@ -867,6 +1029,9 @@ struct Work {
         for (const auto& a : attributes)
             aa.push_back({{"type", a.type}, {"value", a.value}});
         o["attributes"] = std::move(aa);
+        if (rating.present)
+            o["rating"] = {{"value", rating.value}, {"votes-count", rating.votes}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -895,6 +1060,7 @@ struct Area {
     std::string id, type, name, sort_name, disambiguation, begin, end;
     bool ended = false;
     std::vector<std::string> iso_codes;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -913,6 +1079,7 @@ struct Area {
             a.end = sstr(j["life-span"], "end");
             a.ended = sbool(j["life-span"], "ended");
         }
+        a.aliases = parse_aliases(j);
         a.tags = parse_tags(j);
         a.genres = parse_genres(j);
         a.same_as = parse_sameas(j);
@@ -928,6 +1095,7 @@ struct Area {
                   {"iso-3166-1-codes", iso_codes}};
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -959,6 +1127,8 @@ struct Place {
     double latitude = 0, longitude = 0;
     bool has_coords = false;
     std::string area_id, area_name;
+    Rating rating;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -988,6 +1158,8 @@ struct Place {
             p.area_id = sstr(j["area"], "id");
             p.area_name = sstr(j["area"], "name");
         }
+        p.rating = Rating::from(j);
+        p.aliases = parse_aliases(j);
         p.tags = parse_tags(j);
         p.genres = parse_genres(j);
         p.same_as = parse_sameas(j);
@@ -1005,6 +1177,9 @@ struct Place {
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
         if (!area_id.empty()) o["area"] = {{"id", area_id}, {"name", area_name}};
+        if (rating.present)
+            o["rating"] = {{"value", rating.value}, {"votes-count", rating.votes}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -1033,6 +1208,8 @@ struct Event {
 
     std::string id, type, name, disambiguation, time, setlist, begin, end;
     bool cancelled = false, ended = false;
+    Rating rating;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -1050,6 +1227,8 @@ struct Event {
             e.end = sstr(j["life-span"], "end");
             e.ended = sbool(j["life-span"], "ended");
         }
+        e.rating = Rating::from(j);
+        e.aliases = parse_aliases(j);
         e.tags = parse_tags(j);
         e.genres = parse_genres(j);
         e.same_as = parse_sameas(j);
@@ -1066,6 +1245,9 @@ struct Event {
                   {"cancelled", cancelled}};
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        if (rating.present)
+            o["rating"] = {{"value", rating.value}, {"votes-count", rating.votes}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -1091,6 +1273,7 @@ struct Series {
         "work-rels"};
 
     std::string id, type, name, disambiguation;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -1100,6 +1283,7 @@ struct Series {
         s.type = sstr(j, "type");
         s.name = sstr(j, "name");
         s.disambiguation = sstr(j, "disambiguation");
+        s.aliases = parse_aliases(j);
         s.tags = parse_tags(j);
         s.genres = parse_genres(j);
         s.same_as = parse_sameas(j);
@@ -1111,6 +1295,7 @@ struct Series {
                   {"name", name},
                   {"type", type},
                   {"disambiguation", disambiguation}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -1136,6 +1321,7 @@ struct Instrument {
         "work-rels"};
 
     std::string id, type, name, disambiguation, description;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -1146,6 +1332,7 @@ struct Instrument {
         v.name = sstr(j, "name");
         v.disambiguation = sstr(j, "disambiguation");
         v.description = sstr(j, "description");
+        v.aliases = parse_aliases(j);
         v.tags = parse_tags(j);
         v.genres = parse_genres(j);
         v.same_as = parse_sameas(j);
@@ -1158,6 +1345,7 @@ struct Instrument {
                   {"type", type},
                   {"disambiguation", disambiguation},
                   {"description", description}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -1188,6 +1376,7 @@ struct Collection {
 
     std::string id, type, name, editor, entity_type;
     int recording_count = 0;
+    std::vector<Alias> aliases;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -1199,6 +1388,7 @@ struct Collection {
         c.editor = sstr(j, "editor");
         c.entity_type = sstr(j, "entity-type");
         c.recording_count = as_int(j, "recording-count");
+        c.aliases = parse_aliases(j);
         c.tags = parse_tags(j);
         c.genres = parse_genres(j);
         c.same_as = parse_sameas(j);
@@ -1212,6 +1402,7 @@ struct Collection {
                   {"editor", editor},
                   {"entity-type", entity_type},
                   {"recording-count", recording_count}};
+        o["aliases"] = aliases_json(aliases);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -1260,6 +1451,13 @@ struct Annotation {
     static constexpr bool searchable = true;
     static constexpr bool lookable = false; // no lookup endpoint in TS
     static constexpr bool browsable = false;
+    // Search accepts the same inc set (TS ISearchQuery<I>).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
 
     std::string entity, name, text, type;
     static Annotation from(const json& j) {
@@ -1282,6 +1480,13 @@ struct TagEntity {
     static constexpr bool searchable = true;
     static constexpr bool lookable = false; // no lookup endpoint in TS
     static constexpr bool browsable = false;
+    // Search accepts the same inc set (TS ISearchQuery<I>).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
 
     std::string name;
     static TagEntity from(const json& j) {
@@ -1300,6 +1505,13 @@ struct CdStub {
     static constexpr bool searchable = true;
     static constexpr bool lookable = false; // no lookup endpoint in TS
     static constexpr bool browsable = false;
+    // Search accepts the same inc set (TS ISearchQuery<I>).
+    static constexpr std::array<std::string_view, 19> allowed_inc = {
+        "aliases", "annotation", "tags", "genres", "ratings", "media",
+        "area-rels", "artist-rels", "event-rels", "genre-rels",
+        "instrument-rels", "label-rels", "place-rels", "recording-rels",
+        "release-rels", "release-group-rels", "series-rels", "url-rels",
+        "work-rels"};
 
     std::string id, title, artist, barcode, comment;
     static CdStub from(const json& j) {
@@ -1341,31 +1553,6 @@ inline std::string get_str(const json& p, const char* k, const std::string& d = 
     return it->get<std::string>();
 }
 
-template <typename E>
-json do_search(const json& p) {
-    static_assert(E::searchable, "entity is lookup-only");
-    PMap pm;
-    pm["query"] = get_str(p, "query");
-    pm["limit"] = std::to_string(get_int(p, "limit", 10));
-    pm["offset"] = std::to_string(get_int(p, "offset", 0));
-    json raw = json::parse(
-        mb_get(bpath(std::string(E::endpoint), "", "", pm)));
-    json result = {{"count", as_int(raw, "count")},
-                   {"offset", as_int(raw, "offset")}};
-    json arr = json::array();
-    const std::string key(E::list_key);
-    if (raw.contains(key) && raw[key].is_array())
-        for (const auto& e : raw[key]) {
-            // IMatch: search hits carry a score.
-            json item = E::from(e).to_json();
-            if (e.contains("score") && e["score"].is_number())
-                item["score"] = e["score"];
-            arr.push_back(std::move(item));
-        }
-    result[E::list_key] = std::move(arr);
-    return result;
-}
-
 // Validates an inc string against the entity's allowed set
 // (C++ equivalent of musicbrainz-api's ArtistIncludes[] etc.).
 // Tokens are separated by '+' or space, mirroring MB query syntax.
@@ -1392,6 +1579,37 @@ void check_inc(const std::string& inc) {
                     .c_str());
         i = j;
     }
+}
+
+
+template <typename E>
+json do_search(const json& p) {
+    static_assert(E::searchable, "entity is lookup-only");
+    PMap pm;
+    pm["query"] = get_str(p, "query");
+    pm["limit"] = std::to_string(get_int(p, "limit", 10));
+    pm["offset"] = std::to_string(get_int(p, "offset", 0));
+    std::string inc = get_str(p, "inc");
+    if (!inc.empty()) {
+        check_inc<E>(inc);
+        pm["inc"] = inc;
+    }
+    json raw = json::parse(
+        mb_get(bpath(std::string(E::endpoint), "", "", pm)));
+    json result = {{"count", as_int(raw, "count")},
+                   {"offset", as_int(raw, "offset")}};
+    json arr = json::array();
+    const std::string key(E::list_key);
+    if (raw.contains(key) && raw[key].is_array())
+        for (const auto& e : raw[key]) {
+            // IMatch: search hits carry a score.
+            json item = E::from(e).to_json();
+            if (e.contains("score") && e["score"].is_number())
+                item["score"] = e["score"];
+            arr.push_back(std::move(item));
+        }
+    result[E::list_key] = std::move(arr);
+    return result;
 }
 
 template <typename E>
