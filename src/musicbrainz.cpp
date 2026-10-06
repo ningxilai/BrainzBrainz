@@ -2011,13 +2011,11 @@ struct Args {
 
 static const char* kUsage =
     "usage:\n"
-    "\n"
     "  musicbrainz search <entity> --query Q [--limit N] [--offset N] [--inc I] [--json]\n"
     "  musicbrainz lookup <entity> <mbid> [--inc I] [--json]\n"
     "  musicbrainz browse <entity> --<link> <mbid> [--limit N] [--offset N] [--inc I] [--json]\n"
     "  musicbrainz query --entity E [--id ID] [--param k=v ...]\n"
     "entities:\n"
-    "\n"
     "  artist release recording label release-group work area place\n"
     "  event series instrument collection url annotation tag cdstub discid\n";
 
