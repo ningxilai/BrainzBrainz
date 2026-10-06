@@ -104,7 +104,8 @@
             (if (and (string-match-p "Tags (1)" (buffer-string))
                      (string-match-p "Genres (1)" (buffer-string))
                      (string-match-p "Links (1)" (buffer-string))
-                     (string-match-p "https://example.invalid/x" (buffer-string)))
+                     (string-match-p "\\[wikidata\\]" (buffer-string))
+                     (not (string-match-p "https://example.invalid/x" (buffer-string))))
                 (log-ok "tags/genres/sameAs sections render")
               (log-fail (format "sections missing: %S" (buffer-string))))))
 
@@ -185,7 +186,33 @@
               (log-ok "aliases/rating render")
             (log-fail "aliases/rating render missing")))
 
-        ;; Test 14: detail renderer runs headless
+        ;; Test 14: sameAs renders labeled links, no bare URLs
+        (with-temp-buffer
+          (musicbrainz--sameas-section
+           '(:sameAs [(:type "allmusic" :url "https://example.invalid/a")
+                      (:type "bandcamp" :url "https://example.invalid/b")]))
+          (let ((s (buffer-string)))
+            (goto-char (point-min))
+            (if (and (string-match-p "\\[allmusic\\]" s)
+                     (string-match-p "\\[bandcamp\\]" s)
+                     (not (string-match-p "https://example.invalid" s))
+                     (search-forward "[allmusic]" nil t)
+                     (button-at (- (point) 2)))
+                (log-ok "sameAs labeled links")
+              (log-fail (format "sameAs render: %S" s)))))
+
+        ;; Test 15: genre names are jump buttons
+        (with-temp-buffer
+          (musicbrainz--genres-section '(:genres [(:name "rock" :count 5)]))
+          (let ((s (buffer-string)))
+            (goto-char (point-min))
+            (if (and (string-match-p "rock (5)" s)
+                     (search-forward "rock" nil t)
+                     (button-at (- (point) 2)))
+                (log-ok "genre jump buttons")
+              (log-fail (format "genre render: %S" s)))))
+
+        ;; Test 16: detail renderer runs headless
         (with-temp-buffer
           (musicbrainz--detail-artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
                                :disambiguation "" :life-span (:begin "1926" :end "1991")))

@@ -508,33 +508,40 @@ searchable/lookable/browsable per entity; :list is the search key;
                             ""))))))))
 
 (defun musicbrainz--genres-section (entity)
-  "Render ENTITY's genres list."
+  "Render ENTITY's genres list; each name jumps to a recording search."
   (when-let* ((genres (plist-get entity :genres)))
     (let ((items (seq-into genres 'list)))
       (when items
         (insert (format "\nGenres (%d)\n" (seq-length items)))
         (dolist (g items)
-          (insert (format "- %s%s\n"
-                          (or (plist-get g :name) "")
-                          (if-let* ((c (plist-get g :count)))
-                              (format " (%s)" c)
-                            ""))))))))
+          (let ((name (or (plist-get g :name) "")))
+            (insert "- ")
+            (unless (string-empty-p name)
+              (insert-text-button name
+                                  'action (lambda (_) (musicbrainz-search "recording" (format "genre:\"%s\"" name)))
+                                  'follow-link t
+                                  'help-echo (format "Search recordings tagged %s" name)))
+            (insert (format "%s\n"
+                            (if-let* ((c (plist-get g :count)))
+                                (format " (%s)" c)
+                              "")))))))))
 
 (defun musicbrainz--sameas-section (entity)
-  "Render ENTITY's sameAs external links as clickable buttons."
+  "Render ENTITY's sameAs links as labeled buttons, not bare URLs."
   (when-let* ((links (plist-get entity :sameAs)))
     (let ((items (seq-into links 'list)))
       (when items
         (insert (format "\nLinks (%d)\n" (seq-length items)))
         (dolist (l items)
-          (let ((url (plist-get l :url)))
-            (insert (format "- %s "
-                            (or (plist-get l :type) "link")))
-            (when (and url (not (string-empty-p url)))
-              (insert-text-button url
-                                  'action (lambda (_) (browse-url url))
-                                  'follow-link t
-                                  'help-echo url))
+          (let ((url (plist-get l :url))
+                (label (format "[%s]" (or (plist-get l :type) "link"))))
+            (insert "- ")
+            (if (and url (not (string-empty-p url)))
+                (insert-text-button label
+                                    'action (lambda (_) (browse-url url))
+                                    'follow-link t
+                                    'help-echo url)
+              (insert label))
             (insert "\n")))))))
 
 (defun musicbrainz--mbid-button (label entity id)
