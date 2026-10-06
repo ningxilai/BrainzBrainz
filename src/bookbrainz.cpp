@@ -139,6 +139,17 @@ static std::string sstr(const json& j, const char* k) {
     return {};
 }
 
+// Reads a field that the API returns either as a bare string or as
+// an object carrying the display value under "name" (BB is inconsistent
+// across entities: authorType/gender/areas are strings, *Type fields vary).
+static std::string sstr_or_name(const json& j, const char* k) {
+    auto it = j.find(k);
+    if (it == j.end() || it->is_null()) return {};
+    if (it->is_string()) return it->get<std::string>();
+    if (it->is_object()) return sstr(*it, "name");
+    return {};
+}
+
 static int as_int(const json& j, const char* k, int d = 0) {
     auto it = j.find(k);
     if (it == j.end() || it->is_null()) return d;
@@ -196,16 +207,12 @@ struct Author {
         a.type = sstr(j, "authorType");
         if (a.type.empty()) a.type = sstr(j, "type");
         a.disambiguation = sstr(j, "disambiguation");
-        a.gender = sstr(j, "gender");
-        if (a.gender.empty() && j.contains("gender") && j["gender"].is_object())
-            a.gender = sstr(j["gender"], "name");
+        a.gender = sstr_or_name(j, "gender");
         a.begin_date = sstr(j, "beginDate");
         a.end_date = sstr(j, "endDate");
         a.ended = sbool(j, "ended");
-        if (j.contains("beginArea") && j["beginArea"].is_object())
-            a.begin_area = sstr(j["beginArea"], "name");
-        if (j.contains("endArea") && j["endArea"].is_object())
-            a.end_area = sstr(j["endArea"], "name");
+        a.begin_area = sstr_or_name(j, "beginArea");
+        a.end_area = sstr_or_name(j, "endArea");
         return a;
     }
     json to_json() const {
@@ -331,8 +338,7 @@ struct EditionGroup {
         g.name = alias_name(j);
         g.sort_name = alias_sort(j);
         g.type = sstr(j, "type");
-        if (g.type.empty() && j.contains("editionGroupType") && j["editionGroupType"].is_object())
-            g.type = sstr(j["editionGroupType"], "label");
+        if (g.type.empty()) g.type = sstr_or_name(j, "editionGroupType");
         g.disambiguation = sstr(j, "disambiguation");
         if (j.contains("authors") && j["authors"].is_array())
             for (const auto& a : j["authors"])
@@ -359,6 +365,7 @@ struct Publisher {
         "author", "edition", "series", "work", "publisher"};
 
     std::string bbid, name, sort_name, type, disambiguation, begin_date, end_date;
+    std::string area;
     bool ended = false;
     static Publisher from(const json& j) {
         Publisher p;
@@ -366,12 +373,12 @@ struct Publisher {
         p.name = alias_name(j);
         p.sort_name = alias_sort(j);
         p.type = sstr(j, "type");
-        if (p.type.empty() && j.contains("publisherType") && j["publisherType"].is_object())
-            p.type = sstr(j["publisherType"], "label");
+        if (p.type.empty()) p.type = sstr_or_name(j, "publisherType");
         p.disambiguation = sstr(j, "disambiguation");
         p.begin_date = sstr(j, "beginDate");
         p.end_date = sstr(j, "endDate");
         p.ended = sbool(j, "ended");
+        p.area = sstr_or_name(j, "area");
         return p;
     }
     json to_json() const {
@@ -382,7 +389,8 @@ struct Publisher {
                 {"disambiguation", disambiguation},
                 {"begin-date", begin_date},
                 {"end-date", end_date},
-                {"ended", ended}};
+                {"ended", ended},
+                {"area", area}};
     }
 };
 
@@ -395,16 +403,16 @@ struct Series {
     static constexpr std::array<std::string_view, 5> browse_links = {
         "edition", "author", "edition-group", "work", "publisher"};
 
-    std::string bbid, name, sort_name, type, disambiguation;
+    std::string bbid, name, sort_name, type, disambiguation, ordering;
     static Series from(const json& j) {
         Series s;
         s.bbid = sstr(j, "bbid");
         s.name = alias_name(j);
         s.sort_name = alias_sort(j);
         s.type = sstr(j, "type");
-        if (s.type.empty() && j.contains("seriesType") && j["seriesType"].is_object())
-            s.type = sstr(j["seriesType"], "label");
+        if (s.type.empty()) s.type = sstr_or_name(j, "seriesType");
         s.disambiguation = sstr(j, "disambiguation");
+        s.ordering = sstr(j, "seriesOrderingType");
         return s;
     }
     json to_json() const {
@@ -412,7 +420,8 @@ struct Series {
                 {"name", name},
                 {"sort-name", sort_name},
                 {"type", type},
-                {"disambiguation", disambiguation}};
+                {"disambiguation", disambiguation},
+                {"series-ordering-type", ordering}};
     }
 };
 
@@ -433,8 +442,7 @@ struct Work {
         w.name = alias_name(j);
         w.sort_name = alias_sort(j);
         w.type = sstr(j, "type");
-        if (w.type.empty() && j.contains("workType") && j["workType"].is_object())
-            w.type = sstr(j["workType"], "label");
+        if (w.type.empty()) w.type = sstr_or_name(j, "workType");
         w.disambiguation = sstr(j, "disambiguation");
         w.language = sstr(j, "language");
         if (w.language.empty() && j.contains("languages") && j["languages"].is_array()) {
