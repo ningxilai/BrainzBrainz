@@ -2070,7 +2070,10 @@ static Args parse_args(int argc, char** argv) {
         }
         pos.push_back(t);
     }
-    if (pos.empty()) throw CliError(2, "missing subcommand\n" + std::string(kUsage));
+    if (pos.empty()) {
+        a.help = true; // bare `musicbrainz` behaves like --help
+        return a;
+    }
     a.op = pos[0];
     if (a.op == "search" || a.op == "lookup" || a.op == "browse") {
         if (pos.size() < 2) throw CliError(2, a.op + " needs an entity\n" + kUsage);
