@@ -7,8 +7,7 @@ C++20 compiler (JSON via vendored [[https://github.com/nlohmann/json][nlohmann/j
 ** Build
 
 #+begin_src sh
-  make          # builds ./musicbrainz
-  make test     # live smoke test (needs network)
+  make          # builds ./musicbrainz and ./bookbrainz
   make clean
 #+end_src
 
