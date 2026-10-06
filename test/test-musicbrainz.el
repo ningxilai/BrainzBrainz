@@ -212,7 +212,34 @@
                 (log-ok "genre jump buttons")
               (log-fail (format "genre render: %S" s)))))
 
-        ;; Test 16: detail renderer runs headless
+        ;; Test 16: interactive search keeps buffer-local state
+        ;; (regression: mode enable used to wipe mb--entity -> "search-").
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (musicbrainz-search "artist" "artist:radiohead"))
+        (let ((buf (get-buffer "*musicbrainz:artist:artist:radiohead*")))
+          (if (and buf
+                   (with-current-buffer buf
+                     (and (eq major-mode 'musicbrainz-search-mode)
+                          (equal musicbrainz--entity "artist")
+                          (> (length musicbrainz--entries) 0)
+                          (string-match-p "radiohead" (or header-line-format "")))))
+              (progn (log-ok "interactive search buffer")
+                     (kill-buffer buf))
+            (log-fail "interactive search buffer missing/empty")))
+
+        ;; Test 17: interactive browse keeps state
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (musicbrainz-browse "release" "artist" "a74b1b7f-71a5-4011-9441-d0b5e4122711"))
+        (let ((buf (get-buffer "*musicbrainz:browse-release:a74b1b7f-71a5-4011-9441-d0b5e4122711*")))
+          (if (and buf
+                   (with-current-buffer buf
+                     (and (eq musicbrainz--mode 'browse)
+                          (> (length musicbrainz--entries) 0))))
+              (progn (log-ok "interactive browse buffer")
+                     (kill-buffer buf))
+            (log-fail "interactive browse buffer missing/empty")))
+
+        ;; Test 18: detail renderer runs headless
         (with-temp-buffer
           (musicbrainz--detail-artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
                                :disambiguation "" :life-span (:begin "1926" :end "1991")))

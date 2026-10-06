@@ -139,36 +139,36 @@
 
 (defvar musicbrainz--entities
   ;; :links mirrors the C++ browse_links (BrowseXEntityParams in TS).
-  '(("artist"       :search t :lookup t :browse t :list artists
+  '(("artist"       :search t :lookup t :browse t :list :artists
       :links ("area" "collection" "recording" "release" "release-group" "work"))
-    ("release"      :search t :lookup t :browse t :list releases
+    ("release"      :search t :lookup t :browse t :list :releases
       :links ("area" "artist" "editor" "event" "label" "place" "recording" "release" "release-group" "track_artist" "work"))
-    ("recording"    :search t :lookup t :browse t :list recordings
+    ("recording"    :search t :lookup t :browse t :list :recordings
       :links ("artist" "collection" "release" "work"))
-    ("label"        :search t :lookup t :browse t :list labels
+    ("label"        :search t :lookup t :browse t :list :labels
       :links ("area" "collection" "release"))
-    ("release-group" :search t :lookup t :browse t :list release-groups
+    ("release-group" :search t :lookup t :browse t :list :release-groups
       :links ("artist" "collection" "release"))
-    ("work"         :search t :lookup t :browse t :list works
+    ("work"         :search t :lookup t :browse t :list :works
       :links ("artist" "collection"))
-    ("area"         :search t :lookup t :browse t :list areas
+    ("area"         :search t :lookup t :browse t :list :areas
       :links ("collection"))
-    ("place"        :search t :lookup t :browse t :list places
+    ("place"        :search t :lookup t :browse t :list :places
       :links ("area" "collection"))
-    ("event"        :search t :lookup t :browse t :list events
+    ("event"        :search t :lookup t :browse t :list :events
       :links ("area" "artist" "collection" "place"))
-    ("series"       :search t :lookup t :browse t :list series
+    ("series"       :search t :lookup t :browse t :list :series
       :links ("collection"))
-    ("instrument"  :search t :lookup t :browse t :list instruments
+    ("instrument"  :search t :lookup t :browse t :list :instruments
       :links ("collection"))
-    ("collection"   :search nil :lookup t :browse t :list collections
+    ("collection"   :search nil :lookup t :browse t :list :collections
       :links ("area" "artist" "editor" "event" "label" "place" "recording" "release" "release-group" "work"))
-    ("url"          :search t :lookup t :browse t :list urls
+    ("url"          :search t :lookup t :browse t :list :urls
       :links ("resource"))
-    ("annotation"   :search t :lookup nil :browse nil :list annotations)
-    ("tag"          :search t :lookup nil :browse nil :list tags)
-    ("cdstub"       :search t :lookup nil :browse nil :list cdstubs)
-    ("discid"       :search nil :lookup t :browse nil :list releases))
+    ("annotation"   :search t :lookup nil :browse nil :list :annotations)
+    ("tag"          :search t :lookup nil :browse nil :list :tags)
+    ("cdstub"       :search t :lookup nil :browse nil :list :cdstubs)
+    ("discid"       :search nil :lookup t :browse nil :list :releases))
   "Entity capability table. Keys mirror musicbrainz-api's method set:
 searchable/lookable/browsable per entity; :list is the search key;
 :links mirrors the C++ browse_links (TS BrowseXEntityParams).")
@@ -380,8 +380,9 @@ searchable/lookable/browsable per entity; :list is the search key;
     (musicbrainz--run-search musicbrainz--entity musicbrainz--query limit offset)))
 
 (defun musicbrainz--show-results-buffer (buf)
+  ;; NOTE: callers must enable `musicbrainz-search-mode' BEFORE setting
+  ;; the mb-- buffer-locals: entering a major mode kills all locals.
   (with-current-buffer buf
-    (musicbrainz-search-mode)
     (let* ((res (musicbrainz--run-page musicbrainz--limit musicbrainz--offset))
            (items (seq-into (plist-get res (musicbrainz--list-key musicbrainz--entity)) 'list)))
       (setq musicbrainz--count (plist-get res :count)
@@ -399,6 +400,7 @@ searchable/lookable/browsable per entity; :list is the search key;
          (read-string "Query (e.g. artist:radiohead): ")))
   (let ((buf (get-buffer-create (format "*musicbrainz:%s:%s*" entity query))))
     (with-current-buffer buf
+      (musicbrainz-search-mode)
       (setq musicbrainz--entity entity
             musicbrainz--query query
             musicbrainz--mode 'search
@@ -419,6 +421,7 @@ searchable/lookable/browsable per entity; :list is the search key;
      (list en lk id)))
   (let ((buf (get-buffer-create (format "*musicbrainz:browse-%s:%s*" entity linked-id))))
     (with-current-buffer buf
+      (musicbrainz-search-mode)
       (setq musicbrainz--entity entity
             musicbrainz--linked linked
             musicbrainz--linked-id linked-id
