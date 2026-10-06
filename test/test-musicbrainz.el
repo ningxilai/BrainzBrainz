@@ -239,7 +239,17 @@
                      (kill-buffer buf))
             (log-fail "interactive browse buffer missing/empty")))
 
-        ;; Test 18: detail renderer runs headless
+        ;; Test 18: empty query/mbid rejected up front, no subprocess call
+        (condition-case e18a
+            (progn (musicbrainz-search "artist" "")
+                   (log-fail "empty query did not error"))
+          (user-error (log-ok "empty query rejected")))
+        (condition-case e18b
+            (progn (musicbrainz-lookup "artist" "")
+                   (log-fail "empty mbid did not error"))
+          (user-error (log-ok "empty mbid rejected")))
+
+        ;; Test 19: detail renderer runs headless
         (with-temp-buffer
           (musicbrainz--detail-artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
                                :disambiguation "" :life-span (:begin "1926" :end "1991")))

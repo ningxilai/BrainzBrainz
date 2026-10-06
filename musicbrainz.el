@@ -382,14 +382,24 @@ searchable/lookable/browsable per entity; :list is the search key;
 (defun musicbrainz--show-results-buffer (buf)
   ;; NOTE: callers must enable `musicbrainz-search-mode' BEFORE setting
   ;; the mb-- buffer-locals: entering a major mode kills all locals.
+  ;; The buffer is shown before fetching so slow/failing requests still
+  ;; leave visible UI (errors render in-buffer instead of nowhere).
   (with-current-buffer buf
-    (let* ((res (musicbrainz--run-page musicbrainz--limit musicbrainz--offset))
-           (items (seq-into (plist-get res (musicbrainz--list-key musicbrainz--entity)) 'list)))
-      (setq musicbrainz--count (plist-get res :count)
-            musicbrainz--entries (musicbrainz--make-entries musicbrainz--entity items)
-            tabulated-list-entries musicbrainz--entries)
-      (tabulated-list-print t)
-      (musicbrainz--refresh-header)))
+    (musicbrainz--refresh-header)
+    (condition-case err
+        (let* ((res (musicbrainz--run-page musicbrainz--limit musicbrainz--offset))
+               (items (seq-into (plist-get res (musicbrainz--list-key musicbrainz--entity)) 'list)))
+          (setq musicbrainz--count (plist-get res :count)
+                musicbrainz--entries (musicbrainz--make-entries musicbrainz--entity items)
+                tabulated-list-entries musicbrainz--entries)
+          (tabulated-list-print t)
+          (musicbrainz--refresh-header))
+      (error
+       (setq tabulated-list-entries nil)
+       (tabulated-list-print t)
+       (setq header-line-format
+             (format " Error: %s (q to quit)" (error-message-string err)))
+       (message "MusicBrainz request failed: %s" (error-message-string err)))))
   (pop-to-buffer buf))
 
 (defun musicbrainz-search (entity query)
@@ -398,6 +408,8 @@ searchable/lookable/browsable per entity; :list is the search key;
    (list (completing-read "Entity: " (musicbrainz--entities-where :search)
                            nil t nil nil "artist")
          (read-string "Query (e.g. artist:radiohead): ")))
+  (when (string-empty-p query)
+    (user-error "Empty query"))
   (let ((buf (get-buffer-create (format "*musicbrainz:%s:%s*" entity query))))
     (with-current-buffer buf
       (musicbrainz-search-mode)
@@ -407,7 +419,8 @@ searchable/lookable/browsable per entity; :list is the search key;
             musicbrainz--limit musicbrainz-limit
             musicbrainz--offset 0
             musicbrainz--entries nil)
-      (message "Searching %s for %S..." entity query))
+      (message "Searching %s for %S..." entity query)
+      (pop-to-buffer buf))
     (musicbrainz--show-results-buffer buf)))
 
 (defun musicbrainz-browse (entity linked linked-id)
@@ -419,6 +432,8 @@ searchable/lookable/browsable per entity; :list is the search key;
                                (musicbrainz--entity-prop en :links) nil t))
           (id (read-string (format "%s MBID%s: " lk (if (equal lk "resource") " or URI" "")))))
      (list en lk id)))
+  (when (string-empty-p linked-id)
+    (user-error "Empty MBID"))
   (let ((buf (get-buffer-create (format "*musicbrainz:browse-%s:%s*" entity linked-id))))
     (with-current-buffer buf
       (musicbrainz-search-mode)
@@ -429,7 +444,8 @@ searchable/lookable/browsable per entity; :list is the search key;
             musicbrainz--limit musicbrainz-limit
             musicbrainz--offset 0
             musicbrainz--entries nil)
-      (message "Browsing %s by %s %s..." entity linked linked-id))
+      (message "Browsing %s by %s %s..." entity linked linked-id)
+      (pop-to-buffer buf))
     (musicbrainz--show-results-buffer buf)))
 
 (defun musicbrainz-search-more ()
@@ -744,27 +760,41 @@ future entity without a dedicated renderer."
    (list (completing-read "Entity: " (musicbrainz--entities-where :lookup)
                            nil t nil nil "artist")
          (read-string "MBID: ")))
+  (when (string-empty-p mbid)
+    (user-error "Empty MBID"))
   (message "Looking up %s %s..." entity mbid)
-  (let* ((res (musicbrainz--call (concat "lookup-" entity)
-                               (list :id mbid)))
-         (buf (get-buffer-create (format "*musicbrainz:%s:%s*" entity mbid))))
+  (let ((buf (get-buffer-create (format "*musicbrainz:%s:%s*" entity mbid))))
     (with-current-buffer buf
+      (musicbrainz-detail-mode)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert (propertize (format "%s %s\n\n" (musicbrainz--entity-label entity) mbid)
                             'face 'bold))
-        (pcase entity
-          ("artist" (musicbrainz--detail-artist res))
-          ("release" (musicbrainz--detail-release res))
-          ("recording" (musicbrainz--detail-recording res))
-          ("discid" (musicbrainz--detail-disc res))
-          ("label" (musicbrainz--detail-label res))
-          ("release-group" (musicbrainz--detail-release-group res))
-          ("work" (musicbrainz--detail-work res))
-          (_ (musicbrainz--detail-generic res)))
-        (musicbrainz-detail-mode)
-        (goto-char (point-min))))
-    (pop-to-buffer buf)))
+        (insert "Loading...\n"))
+      (pop-to-buffer buf))
+    (with-current-buffer buf
+      (condition-case err
+          (let ((res (musicbrainz--call (concat "lookup-" entity)
+                                        (list :id mbid))))
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert (propertize (format "%s %s\n\n" (musicbrainz--entity-label entity) mbid)
+                                  'face 'bold))
+              (pcase entity
+                ("artist" (musicbrainz--detail-artist res))
+                ("release" (musicbrainz--detail-release res))
+                ("recording" (musicbrainz--detail-recording res))
+                ("discid" (musicbrainz--detail-disc res))
+                ("label" (musicbrainz--detail-label res))
+                ("release-group" (musicbrainz--detail-release-group res))
+                ("work" (musicbrainz--detail-work res))
+                (_ (musicbrainz--detail-generic res)))
+              (goto-char (point-min))))
+        (error
+         (let ((inhibit-read-only t))
+           (erase-buffer)
+           (insert (format "Error: %s\n" (error-message-string err))))
+         (message "MusicBrainz lookup failed: %s" (error-message-string err)))))))
 
 (provide 'musicbrainz)
 ;;; musicbrainz.el ends here
