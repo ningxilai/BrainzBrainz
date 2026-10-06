@@ -1795,50 +1795,7 @@ static void meta_row(std::ostringstream& o, const char* label, const std::string
     if (!v.empty()) o << label << ": " << v << "\n";
 }
 
-static void render_search(std::ostringstream& o, const std::string& entity,
-                          const std::string& desc, const json& res,
-                          const std::string& list_key) {
-    auto li = res.find(list_key);
-    size_t n = (li != res.end() && li->is_array()) ? li->size() : 0;
-    auto ci = res.find("count");
-    long long total = (ci != res.end() && ci->is_number()) ? ci->get<long long>() : (long long)n;
-    o << entity << " " << desc << " — " << n << " of " << total << "\n";
-    int i = 1;
-    if (li != res.end() && li->is_array())
-        for (const auto& e : *li) {
-            auto it = e.find("id");
-            std::string id = (it != e.end() && it->is_string()) ? it->get<std::string>() : "";
-            o << "  " << i++ << ". " << summary(entity, e) << "\n";
-            if (!id.empty()) o << "      " << id << "\n";
-        }
-}
-
 static void render_detail(std::ostringstream& o, const std::string& entity, const json& e);
-
-static void render_aliases(std::ostringstream& o, const json& e) {
-    auto it = e.find("aliases");
-    if (it != e.end() && it->is_array() && !it->empty()) {
-        o << "\nAliases (" << it->size() << ")\n";
-        for (const auto& a : *it) {
-            o << "- " << jstr(a, "name");
-            std::string lc = jstr(a, "locale"), ty = jstr(a, "type");
-            if (!lc.empty()) o << " [" << lc << "]";
-            if (!ty.empty()) o << " (" << ty << ")";
-            o << "\n";
-        }
-    }
-}
-
-static void render_rating(std::ostringstream& o, const json& e) {
-    auto it = e.find("rating");
-    if (it != e.end() && it->is_object()) {
-        auto v = it->find("value"), c = it->find("votes-count");
-        if (v != it->end() && v->is_number())
-            o << "Rating: " << v->get<double>() << " ("
-              << (c != it->end() && c->is_number() ? std::to_string(c->get<long long>()) : "?")
-              << " votes)\n";
-    }
-}
 
 static void render_tags_genres_links(std::ostringstream& o, const json& e) {
     auto ti = e.find("tags");
@@ -2036,8 +1993,6 @@ static void render_detail(std::ostringstream& o, const std::string& entity, cons
     }
     render_tags_genres_links(o, e);
 }
-
-static void render_tags_genres_links(std::ostringstream& o, const json& e);
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing.
