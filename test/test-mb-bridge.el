@@ -154,7 +154,17 @@
               (log-ok "generic detail fallback")
             (log-fail (format "generic detail unexpected: %S" (buffer-string)))))
 
-        ;; Test 12: detail renderer runs headless
+        ;; Test 12: gap-fill fields (label area, RG releases, work attrs)
+        (let* ((res (mb-bridge--call "lookup-label"
+                                     '(:id "46f0f4cd-8aab-4b33-b698-f459faf64190")))
+               (wres (mb-bridge--call "lookup-work"
+                                      '(:id "41c94a08-a551-3c86-bb17-d9a52e3a618b"))))
+          (if (and (plist-get (plist-get res :area) :name)
+                   (> (seq-length (plist-get wres :attributes)) 0))
+              (log-ok "label area + work attributes")
+            (log-fail (format "gap fields missing: %S / %S" res wres))))
+
+        ;; Test 13: detail renderer runs headless
         (with-temp-buffer
           (mb--detail-artist '(:type "Person" :country "US" :sort-name "Davis, Miles"
                                :disambiguation "" :life-span (:begin "1926" :end "1991")))

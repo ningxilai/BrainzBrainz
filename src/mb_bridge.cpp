@@ -674,8 +674,9 @@ struct Label {
         "work-rels", "releases"};
 
     std::string id, type, name, sort_name, label_code, country, disambiguation;
-    std::string begin, end;
+    std::string begin, end, area_id, area_name;
     bool ended = false;
+    std::vector<std::string> ipis, isnis;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -693,12 +694,22 @@ struct Label {
             l.end = sstr(j["life-span"], "end");
             l.ended = sbool(j["life-span"], "ended");
         }
+        if (j.contains("area") && j["area"].is_object()) {
+            l.area_id = sstr(j["area"], "id");
+            l.area_name = sstr(j["area"], "name");
+        }
+        if (j.contains("ipis") && j["ipis"].is_array())
+            for (const auto& s : j["ipis"])
+                if (s.is_string()) l.ipis.push_back(s.get<std::string>());
+        if (j.contains("isnis") && j["isnis"].is_array())
+            for (const auto& s : j["isnis"])
+                if (s.is_string()) l.isnis.push_back(s.get<std::string>());
         l.tags = parse_tags(j);
         l.genres = parse_genres(j);
         l.same_as = parse_sameas(j);
         return l;
     }
-    // Keys mirror ILabel.
+    // Keys mirror ILabel (area/ipis/isnis included).
     json to_json() const {
         json o = {{"id", id},
                   {"name", name},
@@ -706,9 +717,12 @@ struct Label {
                   {"type", type},
                   {"label-code", label_code},
                   {"country", country},
-                  {"disambiguation", disambiguation}};
+                  {"disambiguation", disambiguation},
+                  {"ipis", ipis},
+                  {"isnis", isnis}};
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
+        if (!area_id.empty()) o["area"] = {{"id", area_id}, {"name", area_name}};
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -719,7 +733,7 @@ struct Label {
 struct ReleaseGroup {
     static constexpr std::string_view endpoint = "release-group";
     static constexpr std::string_view list_key = "release-groups";
-    static constexpr std::string_view default_inc = "artists+releases";
+    static constexpr std::string_view default_inc = "artists+releases+tags+genres+url-rels";
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
@@ -739,6 +753,7 @@ struct ReleaseGroup {
     std::string id, type, title, disambiguation, first_release_date, primary_type;
     std::vector<std::string> secondary_types;
     std::vector<NameCredit> credit;
+    std::vector<std::string> release_ids, release_titles;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -756,6 +771,11 @@ struct ReleaseGroup {
         if (j.contains("artist-credit") && j["artist-credit"].is_array())
             for (const auto& n : j["artist-credit"])
                 g.credit.push_back(NameCredit::from(n));
+        if (j.contains("releases") && j["releases"].is_array())
+            for (const auto& rel : j["releases"]) {
+                g.release_ids.push_back(sstr(rel, "id"));
+                g.release_titles.push_back(sstr(rel, "title"));
+            }
         g.tags = parse_tags(j);
         g.genres = parse_genres(j);
         g.same_as = parse_sameas(j);
@@ -773,6 +793,11 @@ struct ReleaseGroup {
         json ca = json::array();
         for (const auto& n : credit) ca.push_back(n.to_json());
         o["artist-credit"] = std::move(ca);
+        json ra = json::array();
+        for (size_t i = 0; i < release_ids.size(); ++i)
+            ra.push_back({{"id", release_ids[i]},
+                          {"title", i < release_titles.size() ? release_titles[i] : ""}});
+        o["releases"] = std::move(ra);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -799,8 +824,12 @@ struct Work {
         "release-rels", "release-group-rels", "series-rels", "url-rels",
         "work-rels"};
 
+    struct Attribute {
+        std::string type, value;
+    };
     std::string id, type, title, disambiguation, language;
     std::vector<std::string> languages, iswcs;
+    std::vector<Attribute> attributes;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
     std::vector<SameAs> same_as;
@@ -817,12 +846,15 @@ struct Work {
         if (j.contains("iswcs") && j["iswcs"].is_array())
             for (const auto& s : j["iswcs"])
                 if (s.is_string()) w.iswcs.push_back(s.get<std::string>());
+        if (j.contains("attributes") && j["attributes"].is_array())
+            for (const auto& a : j["attributes"])
+                w.attributes.push_back({sstr(a, "type"), sstr(a, "value")});
         w.tags = parse_tags(j);
         w.genres = parse_genres(j);
         w.same_as = parse_sameas(j);
         return w;
     }
-    // Keys mirror IWork.
+    // Keys mirror IWork (attributes: [{type, value}] per WS2 shape).
     json to_json() const {
         json o = {{"id", id},
                   {"type", type},
@@ -831,6 +863,10 @@ struct Work {
                   {"language", language},
                   {"languages", languages},
                   {"iswcs", iswcs}};
+        json aa = json::array();
+        for (const auto& a : attributes)
+            aa.push_back({{"type", a.type}, {"value", a.value}});
+        o["attributes"] = std::move(aa);
         o["tags"] = tags_json(tags);
         o["genres"] = genres_json(genres);
         o["sameAs"] = sameas_json(same_as);
@@ -841,7 +877,7 @@ struct Work {
 struct Area {
     static constexpr std::string_view endpoint = "area";
     static constexpr std::string_view list_key = "areas";
-    static constexpr std::string_view default_inc = "";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
@@ -902,7 +938,7 @@ struct Area {
 struct Place {
     static constexpr std::string_view endpoint = "place";
     static constexpr std::string_view list_key = "places";
-    static constexpr std::string_view default_inc = "";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
@@ -979,7 +1015,7 @@ struct Place {
 struct Event {
     static constexpr std::string_view endpoint = "event";
     static constexpr std::string_view list_key = "events";
-    static constexpr std::string_view default_inc = "";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
@@ -995,7 +1031,7 @@ struct Event {
         "release-rels", "release-group-rels", "series-rels", "url-rels",
         "work-rels"};
 
-    std::string id, type, name, disambiguation, time, begin, end;
+    std::string id, type, name, disambiguation, time, setlist, begin, end;
     bool cancelled = false, ended = false;
     std::vector<Tag> tags;
     std::vector<Genre> genres;
@@ -1007,6 +1043,7 @@ struct Event {
         e.name = sstr(j, "name");
         e.disambiguation = sstr(j, "disambiguation");
         e.time = sstr(j, "time");
+        e.setlist = sstr(j, "setlist");
         e.cancelled = sbool(j, "cancelled");
         if (j.contains("life-span") && j["life-span"].is_object()) {
             e.begin = sstr(j["life-span"], "begin");
@@ -1025,6 +1062,7 @@ struct Event {
                   {"type", type},
                   {"disambiguation", disambiguation},
                   {"time", time},
+                  {"setlist", setlist},
                   {"cancelled", cancelled}};
         if (!begin.empty() || !end.empty())
             o["life-span"] = {{"begin", begin}, {"end", end}, {"ended", ended}};
@@ -1038,7 +1076,7 @@ struct Event {
 struct Series {
     static constexpr std::string_view endpoint = "series";
     static constexpr std::string_view list_key = "series";
-    static constexpr std::string_view default_inc = "";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
@@ -1083,7 +1121,7 @@ struct Series {
 struct Instrument {
     static constexpr std::string_view endpoint = "instrument";
     static constexpr std::string_view list_key = "instruments";
-    static constexpr std::string_view default_inc = "";
+    static constexpr std::string_view default_inc = "aliases+tags+genres+ratings+url-rels";
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
@@ -1184,7 +1222,7 @@ struct Collection {
 struct Url {
     static constexpr std::string_view endpoint = "url";
     static constexpr std::string_view list_key = "urls";
-    static constexpr std::string_view default_inc = "";
+    static constexpr std::string_view default_inc = "url-rels";
     static constexpr bool searchable = true;
     static constexpr bool lookable = true;
     static constexpr bool browsable = true;
