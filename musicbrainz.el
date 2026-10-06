@@ -22,6 +22,7 @@
 ;; built-in libraries: no vui, no dash.
 ;;
 ;; Quick start:
+;;   M-x musicbrainz-dashboard        ; search panel (entity + query + Go)
 ;;   M-x musicbrainz-search           ; pick entity, enter query
 ;;   M-x musicbrainz-lookup           ; pick entity, enter MBID
 ;; In results: RET opens detail, + loads more, g refreshes, q quits.
@@ -33,6 +34,7 @@
 (require 'jsonrpc)
 (require 'seq)
 (require 'subr-x)
+(require 'widget)
 
 
 ;;; Connection
@@ -471,6 +473,62 @@ searchable/lookable/browsable per entity; :list is the search key;
     (unless (and id (not (string-empty-p id)))
       (user-error "No MBID on this line"))
     (musicbrainz-lookup musicbrainz--entity id)))
+
+
+;;; Search dashboard (widget.el, mirrors BrainzWrap's search-input
+;;; component; data comes from this bridge instead of url.el).
+
+(defvar musicbrainz-dashboard-mode-map
+  (let ((m (make-sparse-keymap)))
+    ;; Like Custom-mode: derive from fundamental-mode so fields stay
+    ;; editable; add our own quit binding.
+    (set-keymap-parent m widget-keymap)
+    (define-key m (kbd "q") #'quit-window)
+    m)
+  "Keymap for `musicbrainz-dashboard-mode'.")
+
+(define-derived-mode musicbrainz-dashboard-mode nil "MB-Dashboard"
+  "Search dashboard for MusicBrainz."
+  :group 'musicbrainz)
+
+(defvar-local musicbrainz--dash-entity-widget nil)
+(defvar-local musicbrainz--dash-query-widget nil)
+
+(defun musicbrainz-dashboard--go ()
+  "Read dashboard widgets and run the search."
+  (let ((entity (widget-value musicbrainz--dash-entity-widget))
+        (query (string-trim (widget-value musicbrainz--dash-query-widget))))
+    (if (string-empty-p query)
+        (user-error "Empty query")
+      (musicbrainz-search entity query))))
+
+(defun musicbrainz-dashboard ()
+  "Open the MusicBrainz search dashboard."
+  (interactive)
+  (let ((buf "*MusicBrainz*"))
+    (when (get-buffer buf)
+      (kill-buffer buf))
+    (with-current-buffer (get-buffer-create buf)
+      (musicbrainz-dashboard-mode)
+      (erase-buffer)
+        (widget-insert (propertize "MusicBrainz\n" 'face 'bold))
+        (widget-insert "Type: ")
+        (setq musicbrainz--dash-entity-widget
+              (apply #'widget-create 'radio-button-choice
+                     :value "artist"
+                     (mapcar (lambda (e) (list 'choice-item :tag e :value e))
+                             (musicbrainz--entities-where :search))))
+        (widget-insert "\n\nQuery: ")
+        (setq musicbrainz--dash-query-widget
+              (widget-create 'editable-field :size 50 :value ""))
+        (widget-insert " ")
+        (widget-create 'push-button
+                       :notify (lambda (&rest _) (musicbrainz-dashboard--go))
+                       "Go")
+        (widget-insert "\n")
+        (widget-setup)
+        (goto-char (point-min)))
+    (pop-to-buffer buf)))
 
 
 ;;; Detail buffers (special-mode, BrainzWrap section layout)

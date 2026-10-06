@@ -39,7 +39,7 @@
         (let* ((res (musicbrainz--call "search-artist"
                                      '(:query "artist:radiohead" :limit 1 :offset 0)))
                (artists (plist-get res :artists))
-               (a (aref artists 0)))
+               (a (and (> (seq-length artists) 0) (aref artists 0))))
           (if (and (equal (plist-get a :name) "Radiohead")
                    (equal (plist-get a :country) "GB")
                    (equal (plist-get (plist-get a :life-span) :begin) "1991"))
@@ -50,7 +50,8 @@
         (let* ((res (musicbrainz--call "lookup-release"
                                      '(:id "4b3d18cc-8937-36f4-8de0-481088be58e6")))
                (media (plist-get res :media))
-               (tracks (plist-get (aref media 0) :tracks)))
+               (tracks (and (> (seq-length media) 0)
+                            (plist-get (aref media 0) :tracks))))
           (if (and (equal (plist-get res :title) "OK Computer")
                    (= (length tracks) 12)
                    (equal (plist-get (aref tracks 0) :title) "Airbag"))
@@ -113,7 +114,7 @@
         (let* ((res (musicbrainz--call "search-label"
                                      '(:query "label:Warp" :limit 1 :offset 0)))
                (labels (plist-get res :labels))
-               (l (aref labels 0)))
+               (l (and (> (seq-length labels) 0) (aref labels 0))))
           (if (and (plist-get l :name)
                    (numberp (plist-get l :score)))
               (log-ok "search-label with score")
@@ -239,7 +240,35 @@
                      (kill-buffer buf))
             (log-fail "interactive browse buffer missing/empty")))
 
-        ;; Test 18: empty query/mbid rejected up front, no subprocess call
+        ;; Test 18: dashboard builds from registry, Go runs search
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (musicbrainz-dashboard)
+          (let ((buf (get-buffer "*MusicBrainz*")))
+            (if (not buf)
+                (log-fail "dashboard buffer missing")
+              (with-current-buffer buf
+                (let ((s (buffer-string)))
+                  (if (and (eq major-mode 'musicbrainz-dashboard-mode)
+                           (string-match-p "artist" s)
+                           (string-match-p "Go" s)
+                           (equal (widget-value musicbrainz--dash-entity-widget)
+                                  "artist"))
+                      (progn
+                        (let ((inhibit-read-only t))
+                          (widget-value-set musicbrainz--dash-query-widget
+                                            "artist:radiohead"))
+                        (musicbrainz-dashboard--go)
+                        (let ((res (get-buffer "*musicbrainz:artist:artist:radiohead*")))
+                          (if (and res
+                                   (with-current-buffer res
+                                     (> (length musicbrainz--entries) 0)))
+                              (progn (log-ok "dashboard renders and Go searches")
+                                     (kill-buffer res))
+                            (log-fail "dashboard Go produced no entries"))))
+                    (log-fail (format "dashboard content: %S" s)))))
+              (kill-buffer buf))))
+
+        ;; Test 19: empty query/mbid rejected up front, no subprocess call
         (condition-case e18a
             (progn (musicbrainz-search "artist" "")
                    (log-fail "empty query did not error"))
