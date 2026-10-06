@@ -6,7 +6,10 @@ Active
 
 ## Phase
 
-Phase 8: Project Repositioning — Infrastructure Library, Not Newsticker Offloading
+Phase 9: MusicBrainz Bridge — type-driven `src/mb_bridge.cpp` benchmarking
+`musicbrainz-api` (`lookup`/`search` + per-entity inc sets + kebab-case
+entity shapes). Old C++ libmusicbrainz route abandoned; repo relocated from
+`~/emacs-stdio-jsonrpc` to `~/.local/src/libmusicbrainz`.
 
 ## Context
 
