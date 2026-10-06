@@ -25,6 +25,7 @@ test: $(BINS)
 	./bookbrainz lookup edition 2c389e5c-cf78-449e-9f9e-a5f7840b085b | grep -q Dune
 	./bookbrainz browse edition --author d0ac6e1f-617d-41a7-928a-26bb401f77ad --limit 1 | grep -q "of "
 	! ./bookbrainz lookup author d0ac6e1f-617d-41a7-928a-26bb401f77ad --inc bogus-thing 2>/dev/null
+	./bookbrainz search edition --query "Dune" --limit 1 --json | python3 -c "import sys,json; e=json.load(sys.stdin)['results'][0]; assert 'authors' in e and isinstance(e['authors'], list)"
 	@echo "smoke: all passed"
 
 .PHONY: all clean test

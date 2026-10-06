@@ -253,6 +253,7 @@ struct Edition {
     int pages = 0, depth = 0, height = 0, width = 0, weight = 0;
     std::vector<std::string> languages;
     std::vector<EditionCredit> authors;
+    std::vector<std::string> search_authors; // search hits carry plain names
     std::vector<std::string> publisher_ids, publisher_names;
     static Edition from(const json& j) {
         Edition e;
@@ -278,6 +279,9 @@ struct Edition {
         if (j.contains("authorCredits") && j["authorCredits"].is_array())
             for (const auto& c : j["authorCredits"])
                 e.authors.push_back(EditionCredit::from(c));
+        if (j.contains("authors") && j["authors"].is_array())
+            for (const auto& a : j["authors"])
+                if (a.is_string()) e.search_authors.push_back(a.get<std::string>());
         if (j.contains("publishers") && j["publishers"].is_array())
             for (const auto& p : j["publishers"]) {
                 e.publisher_ids.push_back(sstr(p, "bbid"));
@@ -300,6 +304,7 @@ struct Edition {
         json ca = json::array();
         for (const auto& c : authors) ca.push_back(c.to_json());
         o["author-credits"] = std::move(ca);
+        o["authors"] = search_authors;
         json pa = json::array();
         for (size_t i = 0; i < publisher_ids.size(); ++i)
             pa.push_back({{"bbid", publisher_ids[i]},
@@ -319,6 +324,7 @@ struct EditionGroup {
                                                                      "series"};
 
     std::string bbid, name, sort_name, type, disambiguation;
+    std::vector<std::string> search_authors; // search hits carry plain names
     static EditionGroup from(const json& j) {
         EditionGroup g;
         g.bbid = sstr(j, "bbid");
@@ -328,6 +334,9 @@ struct EditionGroup {
         if (g.type.empty() && j.contains("editionGroupType") && j["editionGroupType"].is_object())
             g.type = sstr(j["editionGroupType"], "label");
         g.disambiguation = sstr(j, "disambiguation");
+        if (j.contains("authors") && j["authors"].is_array())
+            for (const auto& a : j["authors"])
+                if (a.is_string()) g.search_authors.push_back(a.get<std::string>());
         return g;
     }
     json to_json() const {
@@ -335,7 +344,8 @@ struct EditionGroup {
                 {"name", name},
                 {"sort-name", sort_name},
                 {"type", type},
-                {"disambiguation", disambiguation}};
+                {"disambiguation", disambiguation},
+                {"authors", search_authors}};
     }
 };
 
@@ -588,12 +598,24 @@ static std::string summary(const std::string& entity, const json& it) {
     if (entity == "author") {
         std::string t = jstr2(it, "type");
         if (!t.empty()) extra = " [" + t + "]";
-    } else if (entity == "edition") {
+    } else if (entity == "edition" || entity == "edition-group") {
         std::string f = jstr2(it, "format");
         if (!f.empty()) extra = " [" + f + "]";
         auto pit = it.find("pages");
         if (pit != it.end() && pit->is_number() && pit->get<long long>() > 0)
             extra += " (" + std::to_string(pit->get<long long>()) + "p)";
+        std::string au;
+        if (auto ait = it.find("authors");
+            ait != it.end() && ait->is_array() && !ait->empty()) {
+            const auto& a0 = (*ait)[0];
+            au = a0.is_string() ? a0.get<std::string>() : jstr2(a0, "author-name");
+        }
+        if (au.empty()) {
+            if (auto ait = it.find("author-credits");
+                ait != it.end() && ait->is_array() && !ait->empty())
+                au = jstr2((*ait)[0], "author-name");
+        }
+        if (!au.empty()) extra += " — " + au;
     } else if (entity == "work") {
         std::string l = jstr2(it, "language");
         if (!l.empty()) extra = " (" + l + ")";
@@ -640,9 +662,14 @@ static void render_detail(std::ostringstream& o, const std::string& entity, cons
         if (auto it = e.find("authors");
             it != e.end() && it->is_array() && !it->empty()) {
             o << "\nAuthors (" << it->size() << ")\n";
-            for (const auto& a : *it)
+            for (const auto& a : *it) {
+                if (a.is_string()) {
+                    o << "- " << a.get<std::string>() << "\n";
+                    continue;
+                }
                 o << "- " << jstr2(a, "author-name") << "\n  " << jstr2(a, "author-bbid")
                   << "\n";
+            }
         }
         if (auto it = e.find("publishers");
             it != e.end() && it->is_array() && !it->empty()) {
